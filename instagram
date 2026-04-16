@@ -32,6 +32,7 @@
         autoLikeBatchSize: 3,
         autoLikeSkipPercent: 30,
         humanizeAutoLiker: true,
+        autoLikeOpenStories: true,
         humanViewMinDelay: 1500,
         humanViewMaxDelay: 3000,
         humanPauseAfterLikes: 4,
@@ -64,8 +65,11 @@
     }
 
     function logAutoLikeStats(prefix = '[AutoLiker]') {
-        if (!settings.debugMode) return;
-        console.log(`${prefix} liked=${autoLikeStats.liked} skipped=${autoLikeStats.skipped} failed=${autoLikeStats.failed} steps=${autoLikeStats.steps}`);
+        console.log(`${prefix} liked=${autoLikeStats.liked} skipped=${autoLikeStats.skipped} failed=${autoLikeStats.failed} steps=${autoLikeStats.steps} sessionLikes=${likesThisSession}`);
+    }
+
+    function logAutoLiker(...args) {
+        console.log('[AutoLiker]', ...args);
     }
 
     // ----------------------------
@@ -406,10 +410,13 @@
     }
 
     function getUnlikedPosts() {
-        return [...document.querySelectorAll('article')].filter(post => {
+        const articles = [...document.querySelectorAll('article')];
+        const unliked = articles.filter(post => {
             if (isHiddenPost(post)) return false;
             return !isPostLiked(post) && !!findLikeControl(post);
         });
+        logAutoLiker('scanned articles=', articles.length, 'unliked candidates=', unliked.length);
+        return unliked;
     }
 
     function randomBetween(min, max) {
@@ -493,31 +500,40 @@
     }
 
     async function autoLikeStep() {
+        logAutoLiker('autoLikeStep called', 'enabled=', settings.autoLikeEnabled);
         if (!settings.autoLikeEnabled) return;
 
         if (await maybeTakeLongBreak()) {
             const afterBreakDelay = humanDelay(settings.autoLikeMinDelay, settings.autoLikeMaxDelay);
-            if (settings.debugMode) console.log(`[AutoLiker] resuming after break in ${afterBreakDelay}ms`);
+            logAutoLiker('resuming after break in', afterBreakDelay, 'ms');
             return autoLikeTimer = window.setTimeout(autoLikeStep, afterBreakDelay);
         }
 
         const posts = getUnlikedPosts();
         if (!posts.length) {
-            if (settings.debugMode) console.log('[AutoLiker] no unliked posts found, scrolling page');
+            logAutoLiker('no unliked posts found, scrolling page');
             maybeHumanScroll();
             autoLikeScrollTimer = window.setTimeout(autoLikeStep, settings.autoLikeScrollDelay);
             return;
         }
 
+        logAutoLiker('autoLikeStep start, found posts=', posts.length, 'batchSize=', settings.autoLikeBatchSize);
         const batch = posts.slice(0, settings.autoLikeBatchSize);
-        for (const post of batch) {
+        for (let index = 0; index < batch.length; index += 1) {
+            const post = batch[index];
             await humanViewPost(post);
 
-            const clickTarget = findLikeControl(post);
-            if (!clickTarget) continue;
+            const username = getPostUsername(post);
+            logAutoLiker(`processing post ${index + 1}/${batch.length}`, 'username=', username || 'unknown');
+            let clickTarget = findLikeControl(post);
+            if (!clickTarget) {
+                logAutoLiker('no like button found for post', username || 'unknown');
+                continue;
+            }
+            logAutoLiker('found clickTarget for', username || 'unknown', clickTarget);
 
             if (chance(settings.humanPeekChance)) {
-                if (settings.debugMode) console.log('[AutoLiker] peeking post before action', post);
+                logAutoLiker('peeking post before action', username || 'unknown');
                 await new Promise(resolve => window.setTimeout(resolve, humanDelay(700, 1500)));
                 window.scrollBy({ top: randomInt(50, 180), left: 0, behavior: 'smooth' });
                 await new Promise(resolve => window.setTimeout(resolve, humanDelay(400, 900)));
@@ -528,31 +544,55 @@
             const skipChance = settings.autoLikeSkipPercent / 100;
             if (Math.random() < skipChance) {
                 autoLikeStats.skipped += 1;
-                if (settings.debugMode) console.log('[AutoLiker] skipping post randomly', post);
+                logAutoLiker('skipping post randomly', username || 'unknown');
                 await new Promise(resolve => window.setTimeout(resolve, humanDelay(500, 1200)));
                 continue;
             }
 
             const delay = humanDelay(settings.autoLikeMinDelay, settings.autoLikeMaxDelay);
-            if (settings.debugMode) console.log(`[AutoLiker] liking post in ${delay}ms`, post);
+            logAutoLiker('waiting to like post in', delay, 'ms', 'user=', username || 'unknown');
             await new Promise(resolve => window.setTimeout(resolve, delay));
 
-            const username = getPostUsername(post);
-            if (username) {
-                await openStoryForPost(post, username);
+            if (username && settings.autoLikeOpenStories) {
+                const storyOpened = await openStoryForPost(post, username);
+                if (!storyOpened) {
+                    logAutoLiker('story open failed or skipped for', username || 'unknown');
+                }
+                if (storyOpened) {
+                    logAutoLiker('story opened successfully, waiting for feed DOM to settle', username || 'unknown');
+                    await new Promise(resolve => window.setTimeout(resolve, 600));
+                    clickTarget = findLikeControl(post);
+                    logAutoLiker('after story close, clickTarget=', clickTarget, 'for', username || 'unknown');
+                    if (!clickTarget) {
+                        logAutoLiker('like control missing after story open for', username || 'unknown');
+                        continue;
+                    }
+                }
+            } else if (username) {
+                logAutoLiker('story opening disabled, continuing with like for', username || 'unknown');
             }
 
             const clicked = safeClick(clickTarget);
+            logAutoLiker('click attempted for', username || 'unknown', 'clickTarget=', clickTarget, 'clicked=', !!clicked);
             if (!clicked) {
                 autoLikeStats.failed += 1;
-                if (settings.debugMode) console.log('[AutoLiker] failed click target', clickTarget, 'user', username || 'unknown');
+                logAutoLiker('failed click target', clickTarget, 'user', username || 'unknown');
+                continue;
+            }
+
+            await new Promise(resolve => window.setTimeout(resolve, 300));
+            const likedVerified = isPostLiked(post);
+            logAutoLiker('liked verified=', likedVerified, 'for', username || 'unknown');
+            if (!likedVerified) {
+                autoLikeStats.failed += 1;
+                logAutoLiker('click did not result in like state for', username || 'unknown', 'clickTarget', clickTarget);
                 continue;
             }
 
             autoLikeStats.liked += 1;
-            if (settings.debugMode) console.log('[AutoLiker] liked post user', username || 'unknown', post);
             likesSincePause += 1;
             likesThisSession += 1;
+            console.log('[AutoLiker] liked post user', username || 'unknown', 'total liked', autoLikeStats.liked, 'sessionLikes', likesThisSession);
 
             await new Promise(resolve => window.setTimeout(resolve, humanDelay(200, 500)));
         }
@@ -570,13 +610,15 @@
         if (autoLikeRunning) return;
         autoLikeRunning = true;
         resetAutoLikeStats();
-        if (settings.debugMode) console.log('[AutoLiker] started');
+        likesThisSession = 0;
+        likesSincePause = 0;
+        logAutoLiker('started', 'openStories=', settings.autoLikeOpenStories, 'batchSize=', settings.autoLikeBatchSize, 'skipPercent=', settings.autoLikeSkipPercent, 'humanize=', settings.humanizeAutoLiker);
         autoLikeStep();
     }
 
     function stopAutoLiker() {
         autoLikeRunning = false;
-        if (settings.debugMode) logAutoLikeStats('[AutoLiker] stopped');
+        logAutoLikeStats('[AutoLiker] stopped');
         if (autoLikeTimer) {
             window.clearTimeout(autoLikeTimer);
             autoLikeTimer = null;
@@ -585,7 +627,7 @@
             window.clearTimeout(autoLikeScrollTimer);
             autoLikeScrollTimer = null;
         }
-        if (settings.debugMode) console.log('[AutoLiker] stopped');
+        logAutoLiker('stopped');
     }
 
     function toggleAutoLiker(enabled) {
@@ -651,6 +693,7 @@
             <label>Batch size: <input type="number" id="autoLikeBatchSize" style="width: 40px;" value="${settings.autoLikeBatchSize}"></label><br>
             <label>Skip chance (%): <input type="number" id="autoLikeSkipPercent" style="width: 40px;" min="0" max="100" value="${settings.autoLikeSkipPercent}"></label><br>
                 <label><input type="checkbox" id="humanizeAutoLiker"> Humanize AutoLiker</label><br>
+                <label><input type="checkbox" id="autoLikeOpenStories"> Open stories before liking</label><br>
             <label>View time min (sec): <input type="number" id="humanViewMinDelay" style="width: 60px;" value="${settings.humanViewMinDelay / 1000}"></label><br>
             <label>View time max (sec): <input type="number" id="humanViewMaxDelay" style="width: 60px;" value="${settings.humanViewMaxDelay / 1000}"></label><br>
             <label>Pause after likes: <input type="number" id="humanPauseAfterLikes" style="width: 40px;" value="${settings.humanPauseAfterLikes}"></label><br>
@@ -687,6 +730,7 @@
             panel.querySelector("#autoLikeBatchSize").value = settings.autoLikeBatchSize;
             panel.querySelector("#autoLikeSkipPercent").value = settings.autoLikeSkipPercent;
             panel.querySelector("#humanizeAutoLiker").checked = settings.humanizeAutoLiker;
+            panel.querySelector("#autoLikeOpenStories").checked = settings.autoLikeOpenStories;
             panel.querySelector("#humanViewMinDelay").value = settings.humanViewMinDelay / 1000;
             panel.querySelector("#humanViewMaxDelay").value = settings.humanViewMaxDelay / 1000;
             panel.querySelector("#humanPauseAfterLikes").value = settings.humanPauseAfterLikes;
@@ -718,6 +762,7 @@
             settings.autoLikeBatchSize = Math.max(1, Number(panel.querySelector("#autoLikeBatchSize").value) || defaults.autoLikeBatchSize);
             settings.autoLikeSkipPercent = Math.min(100, Math.max(0, Number(panel.querySelector("#autoLikeSkipPercent").value) || defaults.autoLikeSkipPercent));
             settings.humanizeAutoLiker = panel.querySelector("#humanizeAutoLiker").checked;
+            settings.autoLikeOpenStories = panel.querySelector("#autoLikeOpenStories").checked;
             settings.humanViewMinDelay = (Number(panel.querySelector("#humanViewMinDelay").value) || defaults.humanViewMinDelay / 1000) * 1000;
             settings.humanViewMaxDelay = (Number(panel.querySelector("#humanViewMaxDelay").value) || defaults.humanViewMaxDelay / 1000) * 1000;
             settings.humanPauseAfterLikes = Math.max(1, Number(panel.querySelector("#humanPauseAfterLikes").value) || defaults.humanPauseAfterLikes);
