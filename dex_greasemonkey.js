@@ -1787,6 +1787,13 @@
                 }
             }
         });
+        if (monitorSettings.restoreMonitorsOnLoad) {
+            const stored = loadStoredMonitors();
+            const storedKeys = Object.keys(stored);
+            if (storedKeys.length > 0 && storedKeys.some(pairId => !mcapMonitors.has(pairId))) {
+                restoreMonitors();
+            }
+        }
     }
 
     function findFavoriteIndicatorButton() {
