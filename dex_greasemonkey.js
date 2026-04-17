@@ -72,6 +72,7 @@
     const monitorStorageKey = 'dex-enhance-mcap-monitors';
     let monitorSortDescending = true;
     let mcapMonitorPollHandle = null;
+    let autoMonitorNewPairs = false;
 
     function loadStoredMonitors() {
         try {
@@ -339,6 +340,11 @@
     function stopAllMcapMonitors() {
         mcapMonitors.forEach(item => item.observer.disconnect());
         mcapMonitors.clear();
+        autoMonitorNewPairs = false;
+        const autoMonitorButton = document.getElementById('dex-auto-monitor-toggle');
+        if (autoMonitorButton) {
+            autoMonitorButton.textContent = 'Auto monitor OFF';
+        }
         stopMcapPolling();
         saveStoredMonitors({});
         document.querySelectorAll('button').forEach(btn => {
@@ -666,7 +672,9 @@
         if (!pairId) return;
         const existing = getCopyWrapper(anchor);
         if (existing) {
-            if (existing.dataset.pairId === pairId) return;
+            if (existing.dataset.pairId === pairId) {
+                return existing.querySelector('button[data-dex-mcap-button="1"]');
+            }
             existing.remove();
         }
 
@@ -751,6 +759,21 @@
 
         wrapper.append(copyButton, gmgnButton, xcaButton, xtickerButton, bubbleButton, pumpFunButton, mcapButton);
         anchor.insertAdjacentElement('afterend', wrapper);
+        return mcapButton;
+    }
+
+    function addNewMcapMonitors() {
+        const anchors = Array.from(document.querySelectorAll('a.ds-dex-table-row[href*="/solana/"]'));
+        let count = 0;
+        anchors.forEach(anchor => {
+            const pairId = getPairIdFromHref(anchor.href);
+            if (!pairId || mcapMonitors.has(pairId)) return;
+            const mcapButton = insertCopyButton(anchor);
+            if (!mcapButton) return;
+            startMcapMonitor(pairId, anchor, mcapButton, true);
+            count += 1;
+        });
+        if (count > 0) showToast('Auto-monitor added ' + count + ' new pairs');
     }
 
     function createFloatingControls() {
@@ -768,17 +791,20 @@
         toggleButton.textContent = 'Collapse';
         toggleButton.style.cssText = 'padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;';
         const buttonGroup = document.createElement('div');
-        buttonGroup.style.cssText = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;';
+        buttonGroup.style.cssText = 'display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;';
         const dipButton = document.createElement('button');
         dipButton.type = 'button';
         dipButton.textContent = 'Dip Only';
         const rangeButton = document.createElement('button');
         rangeButton.type = 'button';
         rangeButton.textContent = '20-100K';
+        const autoMonitorButton = document.createElement('button');
+        autoMonitorButton.type = 'button';
+        autoMonitorButton.textContent = 'Auto monitor OFF';
         const monitorAllButton = document.createElement('button');
         monitorAllButton.type = 'button';
         monitorAllButton.textContent = 'Monitor all';
-        [dipButton, rangeButton, monitorAllButton].forEach(btn => {
+        [dipButton, rangeButton, autoMonitorButton, monitorAllButton].forEach(btn => {
             btn.style.cssText = 'padding:6px 8px;border:none;border-radius:8px;background:#26a69a;color:#111;font-size:12px;line-height:1.2;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
             btn.addEventListener('mouseenter', () => btn.style.background = '#2ac6b3');
             btn.addEventListener('mouseleave', () => btn.style.background = '#26a69a');
@@ -790,6 +816,13 @@
             window.location.href = 'https://dexscreener.com/new-pairs/solana?rankBy=pairAge&order=asc&dexIds=pumpswap,pumpfun&minLiq=5000&minMarketCap=20000&maxMarketCap=100000&minAge=1&maxAge=168&min6HVol=3333&min1HVol=333&profile=1&launchpads=1';
         });
         monitorAllButton.addEventListener('click', addAllMcapMonitors);
+        autoMonitorButton.id = 'dex-auto-monitor-toggle';
+        autoMonitorButton.addEventListener('click', () => {
+            autoMonitorNewPairs = !autoMonitorNewPairs;
+            autoMonitorButton.textContent = autoMonitorNewPairs ? 'Auto monitor ON' : 'Auto monitor OFF';
+            if (autoMonitorNewPairs) addNewMcapMonitors();
+            showToast(autoMonitorNewPairs ? 'Enabled auto-monitor for new pairs' : 'Disabled auto-monitor');
+        });
         toggleButton.addEventListener('click', () => {
             const collapsed = container.dataset.collapsed === '1';
             container.dataset.collapsed = collapsed ? '0' : '1';
@@ -809,7 +842,7 @@
             '</div>' +
             '<div class="dex-mcap-monitor-list" style="overflow:auto;color:#ddd;font-size:12px;min-height:40px;"></div>';
         header.append(title, toggleButton);
-        buttonGroup.append(dipButton, rangeButton, monitorAllButton);
+        buttonGroup.append(dipButton, rangeButton, autoMonitorButton, monitorAllButton);
         container.append(header, buttonGroup, monitorPanel);
         document.body.appendChild(container);
 
@@ -874,7 +907,14 @@
     function scanDexscreenerLinks() {
         cleanupCopyWrappers();
         const anchors = document.querySelectorAll('a.ds-dex-table-row[href*="/solana/"]');
-        anchors.forEach(insertCopyButton);
+        anchors.forEach(anchor => {
+            const pairId = getPairIdFromHref(anchor.href);
+            if (!pairId) return;
+            const mcapButton = insertCopyButton(anchor);
+            if (autoMonitorNewPairs && mcapButton && !mcapMonitors.has(pairId)) {
+                startMcapMonitor(pairId, anchor, mcapButton, true);
+            }
+        });
     }
 
     function observeDexscreener() {
