@@ -78,6 +78,7 @@
     let mcapMonitorPollHandle = null;
     let monitorPollIndex = 0;
     const monitorPollBatchSize = 3;
+    const monitorHistoryMax = 1000;
     let autoMonitorNewPairs = false;
     let actionButtonVisibility = {
         ca: true,
@@ -192,11 +193,34 @@
     function renderSparkline(values) {
         if (!Array.isArray(values) || values.length === 0) return '';
         const bars = '▁▂▃▄▅▆▇█';
-        const slice = values.slice(-8);
+        const maxPoints = 16;
+        const slice = values.slice(-maxPoints);
         const min = Math.min(...slice);
         const max = Math.max(...slice);
         const range = max - min || 1;
         return slice.map(v => bars[Math.floor(((v - min) / range) * (bars.length - 1))]).join('');
+    }
+
+    function createSparklineElement(values, resolution) {
+        const container = document.createElement('span');
+        container.style.cssText = 'display:flex;align-items:flex-end;justify-content:flex-start;gap:1px;height:18px;width:100%;max-width:160px;overflow:hidden;cursor:ns-resize;';
+        if (!Array.isArray(values) || values.length === 0) {
+            container.textContent = 'no data';
+            container.style.cssText = 'font-size:10px;color:#999;display:block;';
+            return container;
+        }
+        const points = values.slice(-resolution);
+        const min = Math.min(...points);
+        const max = Math.max(...points);
+        const range = max - min || 1;
+        points.forEach(value => {
+            const bar = document.createElement('span');
+            const normalized = Math.max(0.05, (value - min) / range);
+            bar.style.cssText = 'flex:1 1 0;min-width:1px;background:#4fd1c5;border-radius:2px 2px 0 0;height:' + Math.round(normalized * 100) + '%;';
+            container.appendChild(bar);
+        });
+        container.title = 'Mouse wheel to change chart resolution (' + resolution + ' points)';
+        return container;
     }
 
     function checkMonitorAlerts(item, newValue) {
@@ -637,15 +661,20 @@
             labelRow.appendChild(label);
             labelContainer.appendChild(labelRow);
             const added = document.createElement('span');
-            added.textContent = 'added ' + formatMonitorDate(item.addedAt) + ' (' + formatMonitorAge(item.addedAt) + ') @ ' + formatMcapDisplay(item.addedMcap);
+            added.textContent = 'added ' + formatMonitorDate(item.addedAt) + ' (' + formatMonitorAge(item.addedAt) + ')';
             added.style.cssText = 'font-size:10px;color:#999;line-height:1.2;';
-            const sparkline = document.createElement('span');
-            sparkline.textContent = renderSparkline(item.history);
-            sparkline.style.cssText = 'font-size:10px;color:#9af;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;';
+            const sparkline = createSparklineElement(item.history, item.graphResolution);
+            sparkline.addEventListener('wheel', event => {
+                event.preventDefault();
+                const delta = event.deltaY > 0 ? -1 : 1;
+                item.graphResolution = Math.max(4, Math.min(80, item.graphResolution + delta));
+                sparkline.title = 'Mouse wheel to change chart resolution (' + item.graphResolution + ' points)';
+                updateMonitorPanel();
+            });
             labelContainer.append(label, sparkline, added);
             const status = document.createElement('span');
             const percentText = formatPercentChange(item.startValue, item.lastValue);
-            status.innerHTML = formatMcapDisplay(item.lastValue) + ' (<span style="color:' + (percentText.startsWith('-') ? '#f56' : '#7cfa8e') + ';">' + percentText + '</span>)';
+            status.innerHTML = formatMcapDisplay(item.addedMcap) + ' → ' + formatMcapDisplay(item.lastValue) + ' <span style="color:' + (percentText.startsWith('-') ? '#f56' : '#7cfa8e') + ';">(' + percentText + ')</span>';
             const alertButton = document.createElement('button');
             alertButton.type = 'button';
             alertButton.textContent = '⚠';
@@ -702,7 +731,7 @@
                     const newValue = parseMcapValue(currentCell.textContent);
                     if (newValue !== null && newValue !== item.lastValue) {
                         item.history.push(newValue);
-                        if (item.history.length > 8) item.history.shift();
+                        if (item.history.length > monitorHistoryMax) item.history.shift();
                         item.lastValue = newValue;
                         checkMonitorAlerts(item, newValue);
                         updateMonitorRowInfo(item);
@@ -715,7 +744,7 @@
                     const apiValue = await fetchPairMcap(item.pairId);
                     if (apiValue === null || apiValue === item.lastValue) return;
                     item.history.push(apiValue);
-                    if (item.history.length > 8) item.history.shift();
+                    if (item.history.length > monitorHistoryMax) item.history.shift();
                     item.lastValue = apiValue;
                     checkMonitorAlerts(item, apiValue);
                     updateMonitorRowInfo(item);
@@ -802,7 +831,7 @@
         let lastValue = currentValue;
         let currentRow = row;
         let currentCell = cell;
-        const item = { observer: null, button, pairId, row: currentRow, cell: currentCell, lastValue, startValue, label, addedAt, addedMcap, imageUrl, thresholds, history: [currentValue], alertedPercent: false, alertedMcap: false };
+        const item = { observer: null, button, pairId, row: currentRow, cell: currentCell, lastValue, startValue, label, addedAt, addedMcap, imageUrl, thresholds, history: [currentValue], graphResolution: 24, alertedPercent: false, alertedMcap: false };
         const ensureRowAndCell = () => {
             if (currentCell && currentRow && document.body.contains(currentRow)) {
                 return true;
@@ -820,7 +849,7 @@
             const newValue = parseMcapValue(currentCell.textContent);
             if (newValue === null || newValue === lastValue) return;
             item.history.push(newValue);
-            if (item.history.length > 8) item.history.shift();
+            if (item.history.length > monitorHistoryMax) item.history.shift();
             item.lastValue = newValue;
             checkMonitorAlerts(item, newValue);
             updateMonitorRowInfo(item);
@@ -1003,11 +1032,39 @@
         }
     }
 
+    function showIframeOverlay(title, url) {
+        const existing = document.getElementById('dex-iframe-overlay');
+        if (existing) existing.remove();
+        const overlay = document.createElement('div');
+        overlay.id = 'dex-iframe-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483660;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:14px;backdrop-filter:blur(5px);';
+        const frameWrapper = document.createElement('div');
+        frameWrapper.style.cssText = 'position:relative;width:95%;max-width:1200px;height:92%;background:#111;border:1px solid rgba(255,255,255,0.12);border-radius:14px;overflow:hidden;box-shadow:0 0 60px rgba(0,0,0,.6);';
+        const header = document.createElement('div');
+        header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:rgba(20,20,20,0.96);border-bottom:1px solid rgba(255,255,255,0.08);color:#fff;font-family:system-ui,sans-serif;font-size:13px;';
+        const headerTitle = document.createElement('div');
+        headerTitle.textContent = title;
+        const closeButton = document.createElement('button');
+        closeButton.type = 'button';
+        closeButton.textContent = '✕';
+        closeButton.style.cssText = 'padding:6px 10px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;cursor:pointer;font-size:13px;';
+        closeButton.addEventListener('click', () => overlay.remove());
+        header.append(headerTitle, closeButton);
+        const iframe = document.createElement('iframe');
+        iframe.src = url;
+        iframe.style.cssText = 'width:100%;height:calc(100% - 46px);border:none;background:#000;';
+        iframe.allow = 'fullscreen';
+        frameWrapper.append(header, iframe);
+        overlay.appendChild(frameWrapper);
+        document.body.appendChild(overlay);
+    }
+
     async function openBubble(pairId) {
         try {
             const pair = await fetchPairInfo(pairId);
             const address = pair.baseToken?.address || pair.pairAddress;
-            window.open('https://v2.bubblemaps.io/map?address=' + encodeURIComponent(address) + '&chain=solana&limit=80', '_blank');
+            const url = 'https://v2.bubblemaps.io/map?address=' + encodeURIComponent(address) + '&chain=solana&limit=80';
+            showIframeOverlay('BubbleMaps', url);
         } catch (e) {
             console.warn('openBubble failed', e);
             alert('Unable to open Bubble for this contract.');
@@ -1296,8 +1353,10 @@
         title.style.cssText = 'color:#fff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;';
         const toggleButton = document.createElement('button');
         toggleButton.type = 'button';
-        toggleButton.textContent = 'Collapse';
-        toggleButton.style.cssText = 'padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;';
+        toggleButton.textContent = '▾';
+        toggleButton.style.cssText = 'padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:13px;cursor:pointer;min-width:32px;';
+        const filterGroup = document.createElement('div');
+        filterGroup.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;';
         const buttonGroup = document.createElement('div');
         buttonGroup.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;';
         const dipButton = document.createElement('button');
@@ -1314,8 +1373,19 @@
         monitorAllButton.textContent = 'Monitor all';
         const actionConfigButton = document.createElement('button');
         actionConfigButton.type = 'button';
-        actionConfigButton.textContent = 'Button config';
-        [dipButton, rangeButton, autoMonitorButton, monitorAllButton, actionConfigButton].forEach(btn => {
+        actionConfigButton.textContent = '⚙';
+        actionConfigButton.title = 'Button config';
+        actionConfigButton.style.cssText = 'padding:6px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:14px;cursor:pointer;min-width:34px;display:flex;align-items:center;justify-content:center;';
+        actionConfigButton.addEventListener('mouseenter', () => actionConfigButton.style.background = 'rgba(255,255,255,0.16)');
+        actionConfigButton.addEventListener('mouseleave', () => actionConfigButton.style.background = 'rgba(255,255,255,0.08)');
+        const headerRight = document.createElement('div');
+        headerRight.style.cssText = 'display:flex;align-items:center;gap:4px;';
+        [dipButton, rangeButton].forEach(btn => {
+            btn.style.cssText = 'padding:6px 8px;border:none;border-radius:8px;background:#2f9cdb;color:#111;font-size:12px;line-height:1.2;cursor:pointer;white-space:normal;word-break:break-word;overflow:hidden;text-overflow:ellipsis;min-height:40px;';
+            btn.addEventListener('mouseenter', () => btn.style.background = '#35b1eb');
+            btn.addEventListener('mouseleave', () => btn.style.background = '#2f9cdb');
+        });
+        [autoMonitorButton, monitorAllButton, actionConfigButton].forEach(btn => {
             btn.style.cssText = 'padding:6px 8px;border:none;border-radius:8px;background:#26a69a;color:#111;font-size:12px;line-height:1.2;cursor:pointer;white-space:normal;word-break:break-word;overflow:hidden;text-overflow:ellipsis;min-height:40px;';
             btn.addEventListener('mouseenter', () => btn.style.background = '#2ac6b3');
             btn.addEventListener('mouseleave', () => btn.style.background = '#26a69a');
@@ -1327,6 +1397,7 @@
             window.location.href = 'https://dexscreener.com/new-pairs/solana?rankBy=pairAge&order=asc&dexIds=pumpswap,pumpfun&minLiq=5000&minMarketCap=20000&maxMarketCap=100000&minAge=1&maxAge=168&min6HVol=3333&min1HVol=333&profile=1&launchpads=1';
         });
         monitorAllButton.addEventListener('click', addAllMcapMonitors);
+        monitorAllButton.textContent = 'Import all';
         autoMonitorButton.id = 'dex-auto-monitor-toggle';
         autoMonitorButton.addEventListener('click', () => {
             autoMonitorNewPairs = !autoMonitorNewPairs;
@@ -1355,9 +1426,11 @@
             const collapsed = container.dataset.collapsed === '1';
             const nextCollapsed = !collapsed;
             container.dataset.collapsed = nextCollapsed ? '1' : '0';
+            filterGroup.style.display = nextCollapsed ? 'none' : 'grid';
             buttonGroup.style.display = nextCollapsed ? 'none' : 'grid';
+            presetRow.style.display = nextCollapsed ? 'none' : 'flex';
             monitorPanel.style.display = nextCollapsed ? 'none' : 'flex';
-            toggleButton.textContent = nextCollapsed ? 'Expand' : 'Collapse';
+            toggleButton.textContent = nextCollapsed ? '▸' : '▾';
             monitorSettings.panelCollapsed = nextCollapsed;
             saveMonitorSettings();
         });
@@ -1365,7 +1438,7 @@
         monitorPanel.id = 'dex-mcap-monitor-panel';
         monitorPanel.style.cssText = 'border-top:1px solid rgba(255,255,255,.1);padding-top:8px;margin-top:8px;display:flex;flex-direction:column;overflow:auto;max-height:calc(100vh - 220px);';
         monitorPanel.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;font-size:12px;color:#fff;">' +
-            '<span><strong>Monitors</strong> <span class="dex-mcap-monitor-count">0</span></span>' +
+            '<span><span class="dex-mcap-monitor-count">0 active</span></span>' +
             '<div style="display:flex;gap:6px;align-items:center;">' +
             '<button id="dex-mcap-sort-percent" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;">Sort %</button>' +
             '<button id="dex-mcap-sort-date" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;">Sort date</button>' +
@@ -1373,8 +1446,10 @@
             '</div>' +
             '</div>' +
             '<div class="dex-mcap-monitor-list" style="overflow:auto;color:#ddd;font-size:12px;min-height:40px;"></div>';
-        header.append(title, toggleButton);
-        buttonGroup.append(dipButton, rangeButton, autoMonitorButton, monitorAllButton, actionConfigButton, restoreToggleButton);
+        header.append(title, headerRight);
+        headerRight.append(actionConfigButton, toggleButton);
+        filterGroup.append(dipButton, rangeButton);
+        buttonGroup.append(autoMonitorButton, monitorAllButton, restoreToggleButton);
         const presetRow = document.createElement('div');
         presetRow.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;';
         const presetSelect = document.createElement('select');
@@ -1419,16 +1494,18 @@
             });
         };
         refreshPresetOptions();
-        container.append(header, buttonGroup, presetRow, monitorPanel);
+        container.append(header, filterGroup, buttonGroup, presetRow, monitorPanel);
         if (monitorSettings.panelLeft !== null && monitorSettings.panelTop !== null) {
             container.style.left = monitorSettings.panelLeft + 'px';
             container.style.top = monitorSettings.panelTop + 'px';
             container.style.right = 'auto';
         }
         container.dataset.collapsed = monitorSettings.panelCollapsed ? '1' : '0';
+        filterGroup.style.display = monitorSettings.panelCollapsed ? 'none' : 'grid';
         buttonGroup.style.display = monitorSettings.panelCollapsed ? 'none' : 'grid';
+        presetRow.style.display = monitorSettings.panelCollapsed ? 'none' : 'flex';
         monitorPanel.style.display = monitorSettings.panelCollapsed ? 'none' : 'flex';
-        toggleButton.textContent = monitorSettings.panelCollapsed ? 'Expand' : 'Collapse';
+        toggleButton.textContent = monitorSettings.panelCollapsed ? '▸' : '▾';
         document.body.appendChild(container);
 
         let dragState = null;
@@ -1534,7 +1611,12 @@
         });
     }
 
+    function isDexscreenerTokenPage() {
+        return /^\/solana\/[A-Za-z0-9]{32,44}(?:\/.*)?$/.test(location.pathname);
+    }
+
     function observeDexscreener() {
+        if (isDexscreenerTokenPage()) return;
         monitorSettings = loadMonitorSettings();
         monitorPresets = loadMonitorPresets();
         monitorSortBy = monitorSettings.sortBy;
@@ -1550,7 +1632,7 @@
         observer.observe(document.body, { childList: true, subtree: true });
     }
 
-    if (location.hostname.includes('dexscreener')) {
+    if (location.hostname.includes('dexscreener') && !isDexscreenerTokenPage()) {
         observeDexscreener();
     }
 
