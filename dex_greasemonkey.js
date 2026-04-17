@@ -844,8 +844,12 @@
                         item.cell = fallback.cell;
                     }
                 }
-                const currentCell = item.cell || getMcapCell(item.row);
+                let currentCell = item.row ? getMcapCell(item.row) : null;
+                if (!currentCell && item.cell) {
+                    currentCell = item.cell;
+                }
                 if (currentCell) {
+                    item.cell = currentCell;
                     const newValue = parseMcapValue(currentCell.textContent);
                     if (newValue !== null && newValue !== item.lastValue) {
                         item.history.push(newValue);
@@ -953,8 +957,16 @@
         let currentCell = cell;
         const item = { observer: null, button, pairId, row: currentRow, cell: currentCell, lastValue, startValue, label, addedAt, addedMcap, imageUrl, thresholds, history: [currentValue], graphResolution: 24, alertedPercent: false, alertedMcap: false };
         const ensureRowAndCell = () => {
-            if (currentCell && currentRow && document.body.contains(currentRow)) {
-                return true;
+            if (currentRow && document.body.contains(currentRow)) {
+                const refreshedCell = getMcapCell(currentRow);
+                if (refreshedCell) {
+                    currentCell = refreshedCell;
+                    item.cell = currentCell;
+                    return true;
+                }
+                if (currentCell && currentRow.contains(currentCell)) {
+                    return true;
+                }
             }
             const fallback = findMcapRowForPair(pairId);
             if (!fallback) return false;
