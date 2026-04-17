@@ -352,9 +352,17 @@
         const container = document.createElement('div');
         container.id = 'dex-pair-floating-controls';
         container.style.cssText = 'position:fixed;top:88px;right:16px;z-index:2147483647;display:flex;flex-direction:column;gap:8px;padding:8px;background:rgba(18,18,18,.92);border:1px solid rgba(255,255,255,.1);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.4);font-family:system-ui,sans-serif;';
+        const header = document.createElement('div');
+        header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
         const title = document.createElement('div');
-        title.textContent = 'DEXscreener copy';
+        title.textContent = 'DEXEnhance';
         title.style.cssText = 'color:#fff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;';
+        const toggleButton = document.createElement('button');
+        toggleButton.type = 'button';
+        toggleButton.textContent = 'Collapse';
+        toggleButton.style.cssText = 'padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;';
+        const buttonGroup = document.createElement('div');
+        buttonGroup.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
         const contractsButton = document.createElement('button');
         contractsButton.type = 'button';
         contractsButton.textContent = 'Copy all pair CAs';
@@ -372,7 +380,16 @@
         contractsButton.addEventListener('click', () => copyPairs('contracts'));
         tokensButton.addEventListener('click', () => copyPairs('tokens'));
         openAllButton.addEventListener('click', () => openAllDexscreenerTabs());
-        container.append(title, contractsButton, tokensButton, openAllButton);
+        toggleButton.addEventListener('click', () => {
+            const collapsed = container.dataset.collapsed === '1';
+            container.dataset.collapsed = collapsed ? '0' : '1';
+            buttonGroup.style.display = collapsed ? 'flex' : 'none';
+            toggleButton.textContent = collapsed ? 'Collapse' : 'Expand';
+            container.style.width = collapsed ? '' : 'auto';
+        });
+        header.append(title, toggleButton);
+        buttonGroup.append(contractsButton, tokensButton, openAllButton);
+        container.append(header, buttonGroup);
         document.body.appendChild(container);
     }
 
