@@ -509,102 +509,6 @@
         }
     }
 
-    const solanaRpcUrls = [
-        'https://api.mainnet-beta.solana.com',
-        'https://solana-api.projectserum.com',
-        'https://ssc-dao.genesysgo.net'
-    ];
-
-    async function fetchSolanaRpc(method, params) {
-        let lastError;
-        for (const endpoint of solanaRpcUrls) {
-            try {
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
-                });
-                if (!response.ok) {
-                    lastError = new Error('Solana RPC failed: ' + response.status + ' @ ' + endpoint);
-                    continue;
-                }
-                const json = await response.json();
-                if (json.error) {
-                    lastError = new Error(json.error.message || 'Solana RPC error @ ' + endpoint);
-                    continue;
-                }
-                return json.result;
-            } catch (error) {
-                lastError = error;
-            }
-        }
-        throw lastError || new Error('Failed to reach any Solana RPC endpoint');
-    }
-
-    async function fetchTokenSupply(tokenAddress) {
-        return await fetchSolanaRpc('getTokenSupply', [tokenAddress, { commitment: 'finalized' }]);
-    }
-
-    async function fetchTokenLargestAccounts(tokenAddress) {
-        return await fetchSolanaRpc('getTokenLargestAccounts', [tokenAddress, { commitment: 'finalized' }]);
-    }
-
-    async function fetchTokenHolderCount(tokenAddress) {
-        const result = await fetchSolanaRpc('getTokenAccountsByMint', [
-            tokenAddress,
-            { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
-            { encoding: 'jsonParsed', commitment: 'finalized' }
-        ]);
-        return Array.isArray(result.value) ? result.value.length : null;
-    }
-
-    function formatSolAmount(amount, decimals) {
-        const value = Number(amount) / Math.pow(10, decimals || 0);
-        if (Number.isNaN(value)) return 'n/a';
-        return value.toLocaleString('en-US', { maximumFractionDigits: 4 });
-    }
-
-    async function showHolderStats(pairId) {
-        try {
-            const pair = await fetchPairInfo(pairId);
-            const tokenAddress = pair.baseToken?.address || pair.quoteToken?.address || pair.pairAddress;
-            const supplyResult = await fetchTokenSupply(tokenAddress);
-            const largestResult = await fetchTokenLargestAccounts(tokenAddress);
-            let holderCount = null;
-            try {
-                holderCount = await fetchTokenHolderCount(tokenAddress);
-            } catch (err) {
-                console.warn('Holder count fetch failed', err);
-            }
-
-            const supplyRaw = Number(supplyResult.value?.amount || 0);
-            const decimals = Number(supplyResult.value?.decimals || 0);
-            const totalSupply = formatSolAmount(supplyResult.value?.amount, decimals);
-            const accounts = Array.isArray(largestResult.value) ? largestResult.value : [];
-            const calculateShare = count => {
-                const amount = accounts.slice(0, count).reduce((sum, item) => sum + Number(item.amount), 0);
-                const pct = supplyRaw > 0 ? (amount / supplyRaw) * 100 : 0;
-                return pct.toFixed(2) + '%';
-            };
-            const top10Share = calculateShare(10);
-            const top25Share = calculateShare(25);
-            const topAccounts = accounts.slice(0, 5).map((item, index) => `${index + 1}. ${formatSolAmount(item.amount, decimals)} (${item.address})`).join('\n');
-
-            showInfoPanel(
-                `Holder stats for ${pair.baseToken?.symbol || pair.quoteToken?.symbol || tokenAddress}\n` +
-                `Total supply: ${totalSupply}\n` +
-                `${holderCount !== null ? 'Holder count: ' + holderCount + '\n' : ''}` +
-                `Top 10 accounts share: ${top10Share}\n` +
-                `Top 25 accounts share: ${top25Share}\n\n` +
-                `Top 5 accounts:\n${topAccounts}`,
-                'info'
-            );
-        } catch (e) {
-            console.warn('showHolderStats failed', e);
-            showInfoPanel('Unable to fetch holder stats. ' + (e?.message || 'Try again later.'), 'error');
-        }
-    }
-
     function openLauncherWithUrls(urls) {
         const html = `<!doctype html><html><head><meta charset="utf-8"><title>Opening Dexscreener tabs</title></head><body style="font-family:system-ui,sans-serif;background:#111;color:#eee;padding:1rem;"><h1 style="font-size:1.1rem;">Opening Dexscreener tabs</h1><p>Click the button below to open ${urls.length} Dexscreener tabs.</p><button id="openAll" style="padding:10px 16px;border:none;border-radius:10px;background:#26a69a;color:#111;font-size:14px;cursor:pointer;">Open all tabs</button><div id="links" style="margin-top:1rem;"></div><script>
             const urls = ${JSON.stringify(urls)};
@@ -754,17 +658,6 @@
             openPumpFun(pairId);
         });
 
-        const holderButton = document.createElement('button');
-        holderButton.type = 'button';
-        holderButton.textContent = 'H';
-        holderButton.title = 'Fetch holder stats';
-        holderButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(142,68,173,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        holderButton.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            showHolderStats(pairId);
-        });
-
         const mcapButton = document.createElement('button');
         mcapButton.type = 'button';
         mcapButton.dataset.dexMcapButton = '1';
@@ -776,7 +669,7 @@
             startMcapMonitor(pairId, anchor, mcapButton);
         });
 
-        wrapper.append(copyButton, gmgnButton, xcaButton, xtickerButton, bubbleButton, pumpFunButton, holderButton, mcapButton);
+        wrapper.append(copyButton, gmgnButton, xcaButton, xtickerButton, bubbleButton, pumpFunButton, mcapButton);
         anchor.insertAdjacentElement('afterend', wrapper);
     }
 
