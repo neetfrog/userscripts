@@ -826,6 +826,10 @@
         }
     }
 
+    function isAttachedElement(element) {
+        return element instanceof Element && document.body.contains(element);
+    }
+
     function startMcapPolling() {
         if (mcapMonitorPollHandle !== null) return;
         mcapMonitorPollHandle = setInterval(() => {
@@ -837,15 +841,15 @@
             for (let i = 0; i < monitors.length && processed < batchSize; i += 1) {
                 const idx = (startIndex + i) % monitors.length;
                 const item = monitors[idx];
-                if (!document.body.contains(item.row)) {
+                if (!isAttachedElement(item.row)) {
                     const fallback = findMcapRowForPair(item.pairId);
                     if (fallback) {
                         item.row = fallback.row;
                         item.cell = fallback.cell;
                     }
                 }
-                let currentCell = item.row ? getMcapCell(item.row) : null;
-                if (!currentCell && item.cell) {
+                let currentCell = item.row && isAttachedElement(item.row) ? getMcapCell(item.row) : null;
+                if (!currentCell && isAttachedElement(item.cell)) {
                     currentCell = item.cell;
                 }
                 if (currentCell) {
