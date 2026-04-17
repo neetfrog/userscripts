@@ -44,6 +44,25 @@
         return match ? match[1] : null;
     }
 
+    function getCopyWrapper(anchor) {
+        const next = anchor.nextElementSibling;
+        return next && next.dataset?.dexCopyWrapper === '1' ? next : null;
+    }
+
+    function cleanupCopyWrappers() {
+        document.querySelectorAll('span[data-dex-copy-wrapper="1"]').forEach(wrapper => {
+            const anchor = wrapper.previousElementSibling;
+            if (!anchor || anchor.tagName !== 'A') {
+                wrapper.remove();
+                return;
+            }
+            const pairId = getPairIdFromHref(anchor.href);
+            if (!pairId || wrapper.dataset.pairId !== pairId) {
+                wrapper.remove();
+            }
+        });
+    }
+
     async function fetchPairInfo(pairId) {
         const url = 'https://api.dexscreener.com/latest/dex/pairs/solana/' + pairId;
         const response = await fetch(url);
@@ -258,12 +277,17 @@
     }
 
     function insertCopyButton(anchor) {
-        if (anchor.dataset.dexCopyButtonInserted) return;
         const pairId = getPairIdFromHref(anchor.href);
         if (!pairId) return;
-        anchor.dataset.dexCopyButtonInserted = '1';
+        const existing = getCopyWrapper(anchor);
+        if (existing) {
+            if (existing.dataset.pairId === pairId) return;
+            existing.remove();
+        }
 
         const wrapper = document.createElement('span');
+        wrapper.dataset.dexCopyWrapper = '1';
+        wrapper.dataset.pairId = pairId;
         wrapper.style.display = 'inline-flex';
         wrapper.style.gap = '4px';
         wrapper.style.alignItems = 'center';
@@ -271,7 +295,7 @@
 
         const copyButton = document.createElement('button');
         copyButton.type = 'button';
-        copyButton.textContent = 'Copy token CA';
+        copyButton.textContent = 'Copy CA';
         copyButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(38,166,154,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
         copyButton.addEventListener('click', event => {
             event.stopPropagation();
@@ -301,7 +325,7 @@
 
         const xtickerButton = document.createElement('button');
         xtickerButton.type = 'button';
-        xtickerButton.textContent = 'X Ticker';
+        xtickerButton.textContent = 'X $';
         xtickerButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(155,89,182,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
         xtickerButton.addEventListener('click', event => {
             event.stopPropagation();
@@ -311,7 +335,7 @@
 
         const bubbleButton = document.createElement('button');
         bubbleButton.type = 'button';
-        bubbleButton.textContent = 'Bubble';
+        bubbleButton.textContent = '🫧';
         bubbleButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,150,136,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
         bubbleButton.addEventListener('click', event => {
             event.stopPropagation();
@@ -353,6 +377,7 @@
     }
 
     function scanDexscreenerLinks() {
+        cleanupCopyWrappers();
         const anchors = document.querySelectorAll('a[href*="/solana/"]');
         anchors.forEach(insertCopyButton);
     }
