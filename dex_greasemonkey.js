@@ -70,6 +70,7 @@
 
     const mcapMonitors = new Map();
     const monitorStorageKey = 'dex-enhance-mcap-monitors';
+    let monitorSortBy = 'percent';
     let monitorSortDescending = true;
     let mcapMonitorPollHandle = null;
     let autoMonitorNewPairs = false;
@@ -239,9 +240,13 @@
     }
 
     function updateMonitorSortButton() {
-        const button = document.getElementById('dex-mcap-sort');
-        if (button) {
-            button.textContent = monitorSortDescending ? 'Sort % ↓' : 'Sort % ↑';
+        const percentButton = document.getElementById('dex-mcap-sort-percent');
+        const dateButton = document.getElementById('dex-mcap-sort-date');
+        if (percentButton) {
+            percentButton.textContent = 'Sort %' + (monitorSortBy === 'percent' ? (monitorSortDescending ? ' ↓' : ' ↑') : '');
+        }
+        if (dateButton) {
+            dateButton.textContent = 'Sort date' + (monitorSortBy === 'date' ? (monitorSortDescending ? ' ↓' : ' ↑') : '');
         }
     }
 
@@ -253,6 +258,11 @@
         if (!list || !count) return;
         const monitors = Array.from(mcapMonitors.values());
         monitors.sort((a, b) => {
+            if (monitorSortBy === 'date') {
+                const aTime = a.addedAt instanceof Date ? a.addedAt.getTime() : 0;
+                const bTime = b.addedAt instanceof Date ? b.addedAt.getTime() : 0;
+                return monitorSortDescending ? bTime - aTime : aTime - bTime;
+            }
             const aChange = getPercentChangeValue(a.startValue, a.lastValue);
             const bChange = getPercentChangeValue(b.startValue, b.lastValue);
             return monitorSortDescending ? bChange - aChange : aChange - bChange;
@@ -836,7 +846,8 @@
         monitorPanel.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;font-size:12px;color:#fff;">' +
             '<span><strong>Monitors</strong> <span class="dex-mcap-monitor-count">0</span></span>' +
             '<div style="display:flex;gap:6px;align-items:center;">' +
-            '<button id="dex-mcap-sort" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;">Sort %</button>' +
+            '<button id="dex-mcap-sort-percent" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;">Sort %</button>' +
+            '<button id="dex-mcap-sort-date" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;">Sort date</button>' +
             '<button id="dex-mcap-stop-all" title="Remove all monitors" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:14px;cursor:pointer;">✕</button>' +
             '</div>' +
             '</div>' +
@@ -892,10 +903,28 @@
         header.addEventListener('pointercancel', onPointerUp);
 
         document.getElementById('dex-mcap-stop-all').addEventListener('click', stopAllMcapMonitors);
-        const sortButton = document.getElementById('dex-mcap-sort');
-        if (sortButton) {
-            sortButton.addEventListener('click', () => {
-                monitorSortDescending = !monitorSortDescending;
+        const percentSortButton = document.getElementById('dex-mcap-sort-percent');
+        const dateSortButton = document.getElementById('dex-mcap-sort-date');
+        if (percentSortButton) {
+            percentSortButton.addEventListener('click', () => {
+                if (monitorSortBy === 'percent') {
+                    monitorSortDescending = !monitorSortDescending;
+                } else {
+                    monitorSortBy = 'percent';
+                    monitorSortDescending = true;
+                }
+                updateMonitorSortButton();
+                updateMonitorPanel();
+            });
+        }
+        if (dateSortButton) {
+            dateSortButton.addEventListener('click', () => {
+                if (monitorSortBy === 'date') {
+                    monitorSortDescending = !monitorSortDescending;
+                } else {
+                    monitorSortBy = 'date';
+                    monitorSortDescending = true;
+                }
                 updateMonitorSortButton();
                 updateMonitorPanel();
             });
