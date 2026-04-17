@@ -69,6 +69,57 @@
     }
 
     const mcapMonitors = new Map();
+    const monitorStorageKey = 'dex-enhance-mcap-monitors';
+    let monitorSortDescending = true;
+
+    function loadStoredMonitors() {
+        try {
+            const raw = localStorage.getItem(monitorStorageKey);
+            return raw ? JSON.parse(raw) : [];
+        } catch (e) {
+            console.warn('Failed to load stored monitors', e);
+            return [];
+        }
+    }
+
+    function saveStoredMonitors(ids) {
+        try {
+            localStorage.setItem(monitorStorageKey, JSON.stringify(Array.from(new Set(ids))));
+        } catch (e) {
+            console.warn('Failed to save stored monitors', e);
+        }
+    }
+
+    function addMonitorToStorage(pairId) {
+        const stored = new Set(loadStoredMonitors());
+        stored.add(pairId);
+        saveStoredMonitors(Array.from(stored));
+    }
+
+    function removeMonitorFromStorage(pairId) {
+        const stored = new Set(loadStoredMonitors());
+        stored.delete(pairId);
+        saveStoredMonitors(Array.from(stored));
+    }
+
+    function restoreMonitors() {
+        const stored = loadStoredMonitors();
+        if (!stored.length) return;
+        const anchors = Array.from(document.querySelectorAll('a.ds-dex-table-row[href*="/solana/"]'));
+        stored.forEach(pairId => {
+            if (mcapMonitors.has(pairId)) return;
+            const anchor = anchors.find(a => getPairIdFromHref(a.href) === pairId);
+            if (!anchor) return;
+            const button = anchor.nextElementSibling?.querySelector('button[data-dex-mcap-button="1"]');
+            if (!button) return;
+            startMcapMonitor(pairId, anchor, button, true);
+        });
+    }
+
+    function getPercentChangeValue(startValue, currentValue) {
+        if (startValue === null || currentValue === null || startValue === 0) return 0;
+        return ((currentValue - startValue) / startValue) * 100;
+    }
 
     function cleanupCopyWrappers() {
         document.querySelectorAll('span[data-dex-copy-wrapper="1"]').forEach(wrapper => {
@@ -139,8 +190,27 @@
         return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
+    function formatMonitorAge(date) {
+        if (!(date instanceof Date)) return 'unknown';
+        const ms = Date.now() - date.getTime();
+        const mins = Math.floor(ms / 60000);
+        if (mins < 1) return 'just now';
+        if (mins < 60) return mins + 'm ago';
+        const hours = Math.floor(mins / 60);
+        if (hours < 24) return hours + 'h ago';
+        const days = Math.floor(hours / 24);
+        return days + 'd ago';
+    }
+
     function getMonitorPanel() {
         return document.getElementById('dex-mcap-monitor-panel');
+    }
+
+    function updateMonitorSortButton() {
+        const button = document.getElementById('dex-mcap-sort');
+        if (button) {
+            button.textContent = monitorSortDescending ? 'Sort % ↓' : 'Sort % ↑';
+        }
     }
 
     function updateMonitorPanel() {
@@ -150,10 +220,23 @@
         const count = panel.querySelector('.dex-mcap-monitor-count');
         if (!list || !count) return;
         const monitors = Array.from(mcapMonitors.values());
+        monitors.sort((a, b) => {
+            const aChange = getPercentChangeValue(a.startValue, a.lastValue);
+            const bChange = getPercentChangeValue(b.startValue, b.lastValue);
+            return monitorSortDescending ? bChange - aChange : aChange - bChange;
+        });
         count.textContent = monitors.length + ' active';
         list.innerHTML = '';
         if (monitors.length === 0) {
-            list.textContent = 'No active MCap monitors';
+            list.innerHTML = '';
+            const monitorAllFallback = document.createElement('button');
+            monitorAllFallback.type = 'button';
+            monitorAllFallback.textContent = 'Monitor all';
+            monitorAllFallback.style.cssText = 'padding:8px 12px;border:none;border-radius:10px;background:#26a69a;color:#111;font-size:12px;cursor:pointer;';
+            monitorAllFallback.addEventListener('click', () => {
+                addAllMcapMonitors();
+            });
+            list.appendChild(monitorAllFallback);
             return;
         }
         monitors.forEach(item => {
@@ -169,7 +252,7 @@
                 window.open('https://dexscreener.com/solana/' + encodeURIComponent(item.pairId), '_blank');
             });
             const added = document.createElement('span');
-            added.textContent = 'added ' + formatMonitorDate(item.addedAt);
+            added.textContent = 'added ' + formatMonitorDate(item.addedAt) + ' (' + formatMonitorAge(item.addedAt) + ')';
             added.style.cssText = 'font-size:10px;color:#999;line-height:1.2;';
             labelContainer.append(label, added);
             const status = document.createElement('span');
@@ -177,15 +260,17 @@
             status.innerHTML = formatMcapDisplay(item.lastValue) + ' (<span style="color:' + (percentText.startsWith('-') ? '#f56' : '#7cfa8e') + ';">' + percentText + '</span>)';
             const stop = document.createElement('button');
             stop.type = 'button';
-            stop.textContent = 'Stop';
-            stop.style.cssText = 'padding:2px 6px;border:none;border-radius:6px;background:rgba(255,255,255,0.08);color:#fff;cursor:pointer;';
+            stop.textContent = '✕';
+            stop.title = 'Remove monitor';
+            stop.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(255,255,255,0.08);color:#fff;font-size:12px;cursor:pointer;';
             stop.addEventListener('click', () => {
                 item.observer.disconnect();
                 mcapMonitors.delete(item.pairId);
-                item.button.textContent = 'MCap';
+                removeMonitorFromStorage(item.pairId);
+                item.button.textContent = 'Monitor';
                 item.button.style.opacity = '1';
                 updateMonitorPanel();
-                showToast('Stopped MCap monitor for ' + item.pairId);
+                showToast('Removed monitor for ' + item.pairId);
             });
             row.append(labelContainer, status, stop);
             list.appendChild(row);
@@ -195,14 +280,15 @@
     function stopAllMcapMonitors() {
         mcapMonitors.forEach(item => item.observer.disconnect());
         mcapMonitors.clear();
+        saveStoredMonitors([]);
         document.querySelectorAll('button').forEach(btn => {
-            if (btn.textContent === 'MCap ON') {
-                btn.textContent = 'MCap';
+            if (btn.textContent === 'Monitoring') {
+                btn.textContent = 'Monitor';
                 btn.style.opacity = '1';
             }
         });
         updateMonitorPanel();
-        showToast('Stopped all MCap monitors');
+        showToast('Removed all monitors');
     }
 
     function addAllMcapMonitors() {
@@ -224,10 +310,11 @@
         if (existing) {
             existing.observer.disconnect();
             mcapMonitors.delete(pairId);
-            button.textContent = 'MCap';
+            removeMonitorFromStorage(pairId);
+            button.textContent = 'Monitor';
             button.style.opacity = '1';
             updateMonitorPanel();
-            if (!silent) showToast('Stopped MCap monitor');
+            if (!silent) showToast('Removed monitor');
             return;
         }
 
@@ -260,8 +347,9 @@
         });
         observer.observe(cell, { childList: true, characterData: true, subtree: true });
         mcapMonitors.set(pairId, { observer, button, pairId, row, cell, lastValue, startValue: lastValue, label, addedAt: new Date() });
+        addMonitorToStorage(pairId);
         button.dataset.dexMcapButton = '1';
-        button.textContent = 'MCap ON';
+        button.textContent = 'Monitoring';
         button.style.opacity = '0.9';
         updateMonitorPanel();
         showToast('Started MCap monitor');
@@ -410,6 +498,17 @@
         }
     }
 
+    async function openPumpFun(pairId) {
+        try {
+            const pair = await fetchPairInfo(pairId);
+            const address = pair.baseToken?.address || pair.pairAddress;
+            window.open('https://pump.fun/coin/' + encodeURIComponent(address), '_blank');
+        } catch (e) {
+            console.warn('openPumpFun failed', e);
+            alert('Unable to open pump.fun for this contract.');
+        }
+    }
+
     function openLauncherWithUrls(urls) {
         const html = `<!doctype html><html><head><meta charset="utf-8"><title>Opening Dexscreener tabs</title></head><body style="font-family:system-ui,sans-serif;background:#111;color:#eee;padding:1rem;"><h1 style="font-size:1.1rem;">Opening Dexscreener tabs</h1><p>Click the button below to open ${urls.length} Dexscreener tabs.</p><button id="openAll" style="padding:10px 16px;border:none;border-radius:10px;background:#26a69a;color:#111;font-size:14px;cursor:pointer;">Open all tabs</button><div id="links" style="margin-top:1rem;"></div><script>
             const urls = ${JSON.stringify(urls)};
@@ -501,7 +600,7 @@
 
         const copyButton = document.createElement('button');
         copyButton.type = 'button';
-        copyButton.textContent = 'Copy CA';
+        copyButton.textContent = 'CA';
         copyButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(38,166,154,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
         copyButton.addEventListener('click', event => {
             event.stopPropagation();
@@ -549,10 +648,20 @@
             openBubble(pairId);
         });
 
+        const pumpFunButton = document.createElement('button');
+        pumpFunButton.type = 'button';
+        pumpFunButton.textContent = '💊';
+        pumpFunButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(255,161,0,0.95);color:#111;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
+        pumpFunButton.addEventListener('click', event => {
+            event.stopPropagation();
+            event.preventDefault();
+            openPumpFun(pairId);
+        });
+
         const mcapButton = document.createElement('button');
         mcapButton.type = 'button';
         mcapButton.dataset.dexMcapButton = '1';
-        mcapButton.textContent = 'MCap';
+        mcapButton.textContent = 'Monitor';
         mcapButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(238,181,12,0.95);color:#111;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
         mcapButton.addEventListener('click', event => {
             event.stopPropagation();
@@ -560,7 +669,7 @@
             startMcapMonitor(pairId, anchor, mcapButton);
         });
 
-        wrapper.append(copyButton, gmgnButton, xcaButton, xtickerButton, bubbleButton, mcapButton);
+        wrapper.append(copyButton, gmgnButton, xcaButton, xtickerButton, bubbleButton, pumpFunButton, mcapButton);
         anchor.insertAdjacentElement('afterend', wrapper);
     }
 
@@ -579,20 +688,17 @@
         toggleButton.textContent = 'Collapse';
         toggleButton.style.cssText = 'padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;';
         const buttonGroup = document.createElement('div');
-        buttonGroup.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;';
+        buttonGroup.style.cssText = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;';
         const dipButton = document.createElement('button');
         dipButton.type = 'button';
         dipButton.textContent = 'Dip Only';
         const rangeButton = document.createElement('button');
         rangeButton.type = 'button';
         rangeButton.textContent = '20-100K';
-        const tokensButton = document.createElement('button');
-        tokensButton.type = 'button';
-        tokensButton.textContent = 'Copy token CAs';
-        const openAllButton = document.createElement('button');
-        openAllButton.type = 'button';
-        openAllButton.textContent = 'Open tabs';
-        [dipButton, rangeButton, tokensButton, openAllButton].forEach(btn => {
+        const monitorAllButton = document.createElement('button');
+        monitorAllButton.type = 'button';
+        monitorAllButton.textContent = 'Monitor all';
+        [dipButton, rangeButton, monitorAllButton].forEach(btn => {
             btn.style.cssText = 'padding:6px 8px;border:none;border-radius:8px;background:#26a69a;color:#111;font-size:12px;line-height:1.2;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
             btn.addEventListener('mouseenter', () => btn.style.background = '#2ac6b3');
             btn.addEventListener('mouseleave', () => btn.style.background = '#26a69a');
@@ -603,14 +709,6 @@
         rangeButton.addEventListener('click', () => {
             window.location.href = 'https://dexscreener.com/new-pairs/solana?rankBy=pairAge&order=asc&dexIds=pumpswap,pumpfun&minLiq=5000&minMarketCap=20000&maxMarketCap=100000&minAge=1&maxAge=168&min6HVol=3333&min1HVol=333&profile=1&launchpads=1';
         });
-        tokensButton.addEventListener('click', () => copyPairs('tokens'));
-        openAllButton.addEventListener('click', () => openAllDexscreenerTabs());
-        const monitorAllButton = document.createElement('button');
-        monitorAllButton.type = 'button';
-        monitorAllButton.textContent = 'Monitor all';
-        monitorAllButton.style.cssText = 'padding:6px 8px;border:none;border-radius:8px;background:#26a69a;color:#111;font-size:12px;line-height:1.2;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-        monitorAllButton.addEventListener('mouseenter', () => monitorAllButton.style.background = '#2ac6b3');
-        monitorAllButton.addEventListener('mouseleave', () => monitorAllButton.style.background = '#26a69a');
         monitorAllButton.addEventListener('click', addAllMcapMonitors);
         toggleButton.addEventListener('click', () => {
             const collapsed = container.dataset.collapsed === '1';
@@ -618,24 +716,47 @@
             buttonGroup.style.display = collapsed ? 'flex' : 'none';
             monitorPanel.style.display = collapsed ? 'block' : 'none';
             toggleButton.textContent = collapsed ? 'Collapse' : 'Expand';
-            container.style.width = collapsed ? '' : 'auto';
         });
         const monitorPanel = document.createElement('div');
         monitorPanel.id = 'dex-mcap-monitor-panel';
         monitorPanel.style.cssText = 'border-top:1px solid rgba(255,255,255,.1);padding-top:8px;margin-top:8px;display:flex;flex-direction:column;overflow:auto;max-height:calc(100vh - 220px);';
         monitorPanel.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;font-size:12px;color:#fff;">' +
-            '<span><strong>MCap monitors</strong> <span class="dex-mcap-monitor-count">0 active</span></span>' +
-            '<button id="dex-mcap-stop-all" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;">Stop all</button>' +
+            '<span><strong>Monitors</strong> <span class="dex-mcap-monitor-count">0</span></span>' +
+            '<div style="display:flex;gap:6px;align-items:center;">' +
+            '<button id="dex-mcap-sort" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;">Sort %</button>' +
+            '<button id="dex-mcap-stop-all" title="Remove all monitors" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:14px;cursor:pointer;">✕</button>' +
+            '</div>' +
             '</div>' +
             '<div class="dex-mcap-monitor-list" style="overflow:auto;color:#ddd;font-size:12px;min-height:40px;"></div>';
         header.append(title, toggleButton);
-        buttonGroup.append(dipButton, rangeButton, tokensButton, openAllButton, monitorAllButton);
+        buttonGroup.append(dipButton, rangeButton, monitorAllButton);
         container.append(header, buttonGroup, monitorPanel);
         document.body.appendChild(container);
 
         let dragState = null;
+        const stopDrag = event => {
+            if (!dragState) return;
+            dragState = null;
+            if (event?.pointerId != null && header.hasPointerCapture(event.pointerId)) {
+                header.releasePointerCapture(event.pointerId);
+            }
+        };
+        const onPointerMove = event => {
+            if (!dragState) return;
+            const dx = event.clientX - dragState.startX;
+            const dy = event.clientY - dragState.startY;
+            container.style.left = dragState.origLeft + dx + 'px';
+            container.style.top = dragState.origTop + dy + 'px';
+        };
+        const onPointerUp = event => {
+            stopDrag(event);
+            document.removeEventListener('pointermove', onPointerMove);
+            document.removeEventListener('pointerup', onPointerUp);
+            document.removeEventListener('pointercancel', onPointerUp);
+        };
         header.addEventListener('pointerdown', event => {
             if (event.button !== 0) return;
+            if (event.target.closest('button')) return;
             const rect = container.getBoundingClientRect();
             dragState = {
                 startX: event.clientX,
@@ -647,26 +768,26 @@
             container.style.top = rect.top + 'px';
             container.style.right = 'auto';
             container.style.bottom = 'auto';
-            container.setPointerCapture(event.pointerId);
+            header.setPointerCapture(event.pointerId);
+            document.addEventListener('pointermove', onPointerMove);
+            document.addEventListener('pointerup', onPointerUp);
+            document.addEventListener('pointercancel', onPointerUp);
             event.preventDefault();
         });
-        header.addEventListener('pointermove', event => {
-            if (!dragState) return;
-            const dx = event.clientX - dragState.startX;
-            const dy = event.clientY - dragState.startY;
-            container.style.left = dragState.origLeft + dx + 'px';
-            container.style.top = dragState.origTop + dy + 'px';
-        });
-        header.addEventListener('pointerup', event => {
-            if (!dragState) return;
-            dragState = null;
-            container.releasePointerCapture(event.pointerId);
-        });
-        header.addEventListener('pointercancel', () => {
-            dragState = null;
-        });
+        header.addEventListener('pointermove', onPointerMove);
+        header.addEventListener('pointerup', onPointerUp);
+        header.addEventListener('pointercancel', onPointerUp);
 
         document.getElementById('dex-mcap-stop-all').addEventListener('click', stopAllMcapMonitors);
+        const sortButton = document.getElementById('dex-mcap-sort');
+        if (sortButton) {
+            sortButton.addEventListener('click', () => {
+                monitorSortDescending = !monitorSortDescending;
+                updateMonitorSortButton();
+                updateMonitorPanel();
+            });
+        }
+        updateMonitorSortButton();
         updateMonitorPanel();
     }
 
@@ -679,6 +800,7 @@
     function observeDexscreener() {
         scanDexscreenerLinks();
         createFloatingControls();
+        restoreMonitors();
         const observer = new MutationObserver(() => scanDexscreenerLinks());
         observer.observe(document.body, { childList: true, subtree: true });
     }
