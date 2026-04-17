@@ -69,6 +69,96 @@
         return next && next.dataset?.dexCopyWrapper === '1' ? next : null;
     }
 
+    const pairInfoCacheKey = 'dex-enhance-pair-info-cache';
+    const pairInfoCacheTTL = 5 * 60 * 1000;
+    const pairInfoCache = new Map();
+    let copyPairsInProgress = false;
+
+    function loadPairInfoCache() {
+        try {
+            const raw = localStorage.getItem(pairInfoCacheKey);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object') return;
+            const now = Date.now();
+            Object.entries(parsed).forEach(([pairId, entry]) => {
+                if (!entry || typeof entry !== 'object') return;
+                if (typeof entry.timestamp !== 'number' || !entry.data) return;
+                if (now - entry.timestamp > pairInfoCacheTTL) return;
+                pairInfoCache.set(pairId, entry);
+            });
+        } catch (e) {
+            console.warn('Failed to load pair info cache', e);
+        }
+    }
+
+    function savePairInfoCache() {
+        try {
+            const now = Date.now();
+            const payload = {};
+            pairInfoCache.forEach((entry, pairId) => {
+                if (now - entry.timestamp <= pairInfoCacheTTL) {
+                    payload[pairId] = entry;
+                }
+            });
+            localStorage.setItem(pairInfoCacheKey, JSON.stringify(payload));
+        } catch (e) {
+            console.warn('Failed to save pair info cache', e);
+        }
+    }
+
+    function getCachedPairInfo(pairId) {
+        const entry = pairInfoCache.get(pairId);
+        if (!entry) return null;
+        if (Date.now() - entry.timestamp > pairInfoCacheTTL) {
+            pairInfoCache.delete(pairId);
+            return null;
+        }
+        return entry.data;
+    }
+
+    function cachePairInfo(pairId, data) {
+        if (!pairId || !data) return;
+        pairInfoCache.set(pairId, { timestamp: Date.now(), data });
+        savePairInfoCache();
+    }
+
+    function scheduleIdle(fn) {
+        if (typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(fn, { timeout: 1000 });
+        } else {
+            setTimeout(fn, 0);
+        }
+    }
+
+    function normalizeStoredNumber(value) {
+        if (typeof value === 'number' && !Number.isNaN(value)) {
+            return value;
+        }
+        if (typeof value === 'string') {
+            const parsed = Number(value.replace(/[^0-9\.\-]/g, ''));
+            if (!Number.isNaN(parsed)) return parsed;
+        }
+        return null;
+    }
+
+    function getDexScreenerMutationRoot() {
+        const selectors = [
+            '.ds-dex-table',
+            '[data-testid="pairs-scrollable"]',
+            '.scroller',
+            '.pair-list',
+            'main',
+            '#app'
+        ];
+        for (const selector of selectors) {
+            const target = document.querySelector(selector);
+            if (target) return target;
+        }
+        const anchor = document.querySelector('a.ds-dex-table-row');
+        return (anchor && anchor.parentElement) || document.body;
+    }
+
     const mcapMonitors = new Map();
     const monitorStorageKey = 'dex-enhance-mcap-monitors';
     const monitorSettingsKey = 'dex-enhance-mcap-settings';
@@ -288,7 +378,26 @@
                 }, {});
             }
             if (parsed && typeof parsed === 'object') {
-                return parsed;
+                return Object.entries(parsed).reduce((acc, [pairId, entry]) => {
+                    if (typeof pairId !== 'string' || !entry || typeof entry !== 'object') return acc;
+                    const normalized = {};
+                    const startValue = normalizeStoredNumber(entry.startValue);
+                    if (startValue !== null) normalized.startValue = startValue;
+                    const addedMcap = normalizeStoredNumber(entry.addedMcap);
+                    if (addedMcap !== null) normalized.addedMcap = addedMcap;
+                    if (typeof entry.addedAt === 'string') {
+                        const date = new Date(entry.addedAt);
+                        if (!Number.isNaN(date.getTime())) normalized.addedAt = date;
+                    }
+                    if (entry.thresholds && typeof entry.thresholds === 'object') {
+                        normalized.thresholds = {
+                            percentChange: normalizeStoredNumber(entry.thresholds.percentChange),
+                            mcapChange: normalizeStoredNumber(entry.thresholds.mcapChange)
+                        };
+                    }
+                    acc[pairId] = normalized;
+                    return acc;
+                }, {});
             }
             return {};
         } catch (e) {
@@ -315,7 +424,7 @@
                 panelLeft: typeof parsed.panelLeft === 'number' ? parsed.panelLeft : null,
                 panelTop: typeof parsed.panelTop === 'number' ? parsed.panelTop : null,
                 panelCollapsed: Boolean(parsed.panelCollapsed),
-                sortBy: parsed.sortBy === 'date' ? 'date' : 'percent',
+                sortBy: parsed.sortBy === 'activity' ? 'activity' : parsed.sortBy === 'date' ? 'date' : 'percent',
                 sortDescending: Boolean(parsed.sortDescending),
                 autoMonitorNewPairs: Boolean(parsed.autoMonitorNewPairs),
                 actionButtonVisibility: parsed.actionButtonVisibility && typeof parsed.actionButtonVisibility === 'object'
@@ -598,11 +707,15 @@
     function updateMonitorSortButton() {
         const percentButton = document.getElementById('dex-mcap-sort-percent');
         const dateButton = document.getElementById('dex-mcap-sort-date');
+        const activityButton = document.getElementById('dex-mcap-sort-activity');
         if (percentButton) {
             percentButton.textContent = 'Sort %' + (monitorSortBy === 'percent' ? (monitorSortDescending ? ' ↓' : ' ↑') : '');
         }
         if (dateButton) {
             dateButton.textContent = 'Sort date' + (monitorSortBy === 'date' ? (monitorSortDescending ? ' ↓' : ' ↑') : '');
+        }
+        if (activityButton) {
+            activityButton.textContent = 'Sort activity' + (monitorSortBy === 'activity' ? (monitorSortDescending ? ' ↓' : ' ↑') : '');
         }
     }
 
@@ -618,6 +731,11 @@
                 const aTime = a.addedAt instanceof Date ? a.addedAt.getTime() : 0;
                 const bTime = b.addedAt instanceof Date ? b.addedAt.getTime() : 0;
                 return monitorSortDescending ? bTime - aTime : aTime - bTime;
+            }
+            if (monitorSortBy === 'activity') {
+                const aActivity = Array.isArray(a.history) ? a.history.length : 0;
+                const bActivity = Array.isArray(b.history) ? b.history.length : 0;
+                return monitorSortDescending ? bActivity - aActivity : aActivity - bActivity;
             }
             const aChange = getPercentChangeValue(a.startValue, a.lastValue);
             const bChange = getPercentChangeValue(b.startValue, b.lastValue);
@@ -818,12 +936,14 @@
             showInfoPanel('Unable to parse current MCap.', 'error');
             return;
         }
-        const startValue = typeof persistedStartValue === 'number' && persistedStartValue > 0 ? persistedStartValue : currentValue;
+        const normalizedStartValue = normalizeStoredNumber(persistedStartValue);
+        const normalizedAddedMcap = normalizeStoredNumber(persistedAddedMcap);
+        const startValue = normalizedStartValue !== null && normalizedStartValue > 0 ? normalizedStartValue : currentValue;
         const addedAt = persistedAddedAt instanceof Date && !Number.isNaN(persistedAddedAt.getTime()) ? persistedAddedAt : new Date();
-        const addedMcap = typeof persistedAddedMcap === 'number' && persistedAddedMcap > 0 ? persistedAddedMcap : currentValue;
+        const addedMcap = normalizedAddedMcap !== null && normalizedAddedMcap > 0 ? normalizedAddedMcap : currentValue;
         const thresholds = persistedThresholds && typeof persistedThresholds === 'object' ? {
-            percentChange: typeof persistedThresholds.percentChange === 'number' ? persistedThresholds.percentChange : null,
-            mcapChange: typeof persistedThresholds.mcapChange === 'number' ? persistedThresholds.mcapChange : null
+            percentChange: normalizeStoredNumber(persistedThresholds.percentChange),
+            mcapChange: normalizeStoredNumber(persistedThresholds.mcapChange)
         } : { percentChange: null, mcapChange: null };
         const label = getTokenLabel(row);
         const imageUrl = getTokenImageUrl(row);
@@ -871,17 +991,26 @@
     }
 
     async function fetchPairInfo(pairId) {
+        const cached = getCachedPairInfo(pairId);
         const url = 'https://api.dexscreener.com/latest/dex/pairs/solana/' + pairId;
-        const response = await fetch(url);
-        if (!response.ok) {
-            throw new Error('Dexscreener API failed: ' + response.status);
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                if (cached) return cached;
+                throw new Error('Dexscreener API failed: ' + response.status);
+            }
+            const json = await response.json();
+            const pair = Array.isArray(json.pairs) ? json.pairs[0] : json.pair || null;
+            if (!pair) {
+                if (cached) return cached;
+                throw new Error('Pair data missing for ' + pairId);
+            }
+            cachePairInfo(pairId, pair);
+            return pair;
+        } catch (e) {
+            if (cached) return cached;
+            throw e;
         }
-        const json = await response.json();
-        const pair = Array.isArray(json.pairs) ? json.pairs[0] : json.pair || null;
-        if (!pair) {
-            throw new Error('Pair data missing for ' + pairId);
-        }
-        return pair;
     }
 
     async function fetchPairMcap(pairId) {
@@ -915,74 +1044,83 @@
     }
 
     async function copyPairs(mode = 'tokens') {
-        const pairs = new Map();
-        const pairIds = new Set();
-        const anchors = Array.from(document.querySelectorAll('a[href*="/solana/"]'));
-        const isDexscreener = location.hostname.includes('dexscreener');
-
-        for (const anchor of anchors) {
-            const pairId = getPairIdFromHref(anchor.href);
-            if (!pairId) continue;
-            pairIds.add(pairId);
-        }
-
-        if (pairIds.size === 0) {
-            showToast('No Solana pair links found');
+        if (copyPairsInProgress) {
+            showToast('Copy already in progress');
             return;
         }
+        copyPairsInProgress = true;
+        try {
+            const pairs = new Map();
+            const pairIds = new Set();
+            const anchors = Array.from(document.querySelectorAll('a[href*="/solana/"]'));
+            const isDexscreener = location.hostname.includes('dexscreener');
 
-        if (isDexscreener) {
-            const fetchPromises = Array.from(pairIds).map(async pairId => {
-                try {
-                    const pair = await fetchPairInfo(pairId);
-                    const outputAddress = mode === 'contracts' ? pair.pairAddress : pair.baseToken?.address || pair.pairAddress;
-                    const ticker = mode === 'contracts' ? '' : pair.baseToken?.symbol || '';
-                    const name = mode === 'contracts' ? '' : pair.baseToken?.name || '';
-                    const existing = pairs.get(outputAddress);
+            for (const anchor of anchors) {
+                const pairId = getPairIdFromHref(anchor.href);
+                if (!pairId) continue;
+                pairIds.add(pairId);
+            }
+
+            if (pairIds.size === 0) {
+                showToast('No Solana pair links found');
+                return;
+            }
+
+            if (isDexscreener) {
+                const fetchPromises = Array.from(pairIds).map(async pairId => {
+                    try {
+                        const pair = await fetchPairInfo(pairId);
+                        const outputAddress = mode === 'contracts' ? pair.pairAddress : pair.baseToken?.address || pair.pairAddress;
+                        const ticker = mode === 'contracts' ? '' : pair.baseToken?.symbol || '';
+                        const name = mode === 'contracts' ? '' : pair.baseToken?.name || '';
+                        const existing = pairs.get(outputAddress);
+                        if (existing) {
+                            pairs.set(outputAddress, {
+                                ticker: existing.ticker || ticker,
+                                name: existing.name || name,
+                                pairAddress: existing.pairAddress || pair.pairAddress
+                            });
+                        } else {
+                            pairs.set(outputAddress, { ticker, name, pairAddress: pair.pairAddress });
+                        }
+                    } catch (e) {
+                        console.warn('Failed to fetch pair', pairId, e);
+                    }
+                });
+                await Promise.all(fetchPromises);
+            } else {
+                anchors.forEach(a => {
+                    const address = getPairIdFromHref(a.href) || getAddressFromHref(a.href);
+                    if (!address) return;
+                    const text = (a.textContent || '').replace(/\s+/g, ' ').trim();
+                    const tokenMatch = text.match(/(.+?)\s*\/\s*SOL\s*(.+)/i);
+                    const ticker = tokenMatch ? tokenMatch[1].trim() : '';
+                    let name = tokenMatch ? tokenMatch[2].trim() : '';
+                    if (name) {
+                        name = name.replace(/\s*\$\S.*$/, '').trim();
+                    }
+                    const existing = pairs.get(address);
                     if (existing) {
-                        pairs.set(outputAddress, {
+                        pairs.set(address, {
                             ticker: existing.ticker || ticker,
-                            name: existing.name || name,
-                            pairAddress: existing.pairAddress || pair.pairAddress
+                            name: existing.name || name
                         });
                     } else {
-                        pairs.set(outputAddress, { ticker, name, pairAddress: pair.pairAddress });
+                        pairs.set(address, { ticker, name });
                     }
-                } catch (e) {
-                    console.warn('Failed to fetch pair', pairId, e);
-                }
-            });
-            await Promise.all(fetchPromises);
-        } else {
-            anchors.forEach(a => {
-                const address = getPairIdFromHref(a.href) || getAddressFromHref(a.href);
-                if (!address) return;
-                const text = (a.textContent || '').replace(/\s+/g, ' ').trim();
-                const tokenMatch = text.match(/(.+?)\s*\/\s*SOL\s*(.+)/i);
-                const ticker = tokenMatch ? tokenMatch[1].trim() : '';
-                let name = tokenMatch ? tokenMatch[2].trim() : '';
-                if (name) {
-                    name = name.replace(/\s*\$\S.*$/, '').trim();
-                }
-                const existing = pairs.get(address);
-                if (existing) {
-                    pairs.set(address, {
-                        ticker: existing.ticker || ticker,
-                        name: existing.name || name
-                    });
-                } else {
-                    pairs.set(address, { ticker, name });
-                }
-            });
-        }
+                });
+            }
 
-        const result = buildResult(pairs, mode);
-        writeClipboard(result).then(() => {
-            showToast('Copied ' + pairs.size + ' addresses to clipboard');
-        }).catch(() => {
-            alert('Failed to copy automatically; please use the overlay text box.');
-            showResultOverlay(pairs, mode);
-        });
+            const result = buildResult(pairs, mode);
+            writeClipboard(result).then(() => {
+                showToast('Copied ' + pairs.size + ' addresses to clipboard');
+            }).catch(() => {
+                alert('Failed to copy automatically; please use the overlay text box.');
+                showResultOverlay(pairs, mode);
+            });
+        } finally {
+            copyPairsInProgress = false;
+        }
     }
 
     async function copySingleAddress(pairId) {
@@ -1442,6 +1580,7 @@
             '<div style="display:flex;gap:6px;align-items:center;">' +
             '<button id="dex-mcap-sort-percent" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;">Sort %</button>' +
             '<button id="dex-mcap-sort-date" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;">Sort date</button>' +
+            '<button id="dex-mcap-sort-activity" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:11px;cursor:pointer;">Sort activity</button>' +
             '<button id="dex-mcap-stop-all" title="Remove all monitors" style="padding:4px 8px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;font-size:14px;cursor:pointer;">✕</button>' +
             '</div>' +
             '</div>' +
@@ -1592,11 +1731,29 @@
                 updateMonitorPanel();
             });
         }
+        const activitySortButton = document.getElementById('dex-mcap-sort-activity');
+        if (activitySortButton) {
+            activitySortButton.addEventListener('click', () => {
+                if (monitorSortBy === 'activity') {
+                    monitorSortDescending = !monitorSortDescending;
+                } else {
+                    monitorSortBy = 'activity';
+                    monitorSortDescending = true;
+                }
+                monitorSettings.sortBy = monitorSortBy;
+                monitorSettings.sortDescending = monitorSortDescending;
+                saveMonitorSettings();
+                updateMonitorSortButton();
+                updateMonitorPanel();
+            });
+        }
         updateMonitorSortButton();
         updateMonitorPanel();
     }
 
-    const debouncedScanDexscreenerLinks = debounce(scanDexscreenerLinks, 200);
+    const debouncedScanDexscreenerLinks = debounce(() => {
+        scheduleIdle(scanDexscreenerLinks);
+    }, 200);
 
     function scanDexscreenerLinks() {
         cleanupCopyWrappers();
@@ -1604,15 +1761,110 @@
         anchors.forEach(anchor => {
             const pairId = getPairIdFromHref(anchor.href);
             if (!pairId) return;
+            const existing = getCopyWrapper(anchor);
+            if (existing) return;
             const mcapButton = insertCopyButton(anchor);
-            if (autoMonitorNewPairs && mcapButton && !mcapMonitors.has(pairId)) {
-                startMcapMonitor(pairId, anchor, mcapButton, true);
+            if (mcapButton) {
+                anchor.dataset.dexEnhanced = '1';
+                if (autoMonitorNewPairs && !mcapMonitors.has(pairId)) {
+                    startMcapMonitor(pairId, anchor, mcapButton, true);
+                }
             }
         });
     }
 
+    function findFavoriteIndicatorButton() {
+        const exactSelector = 'button[data-tooltip="indicator_preset" i], button[aria-label="indicator_preset" i], button[data-tooltip="a" i], button[aria-label="a" i]';
+        const buttons = Array.from(document.querySelectorAll(exactSelector));
+        if (buttons.length) return buttons.find(btn => btn.textContent.trim() === 'I' || btn.textContent.trim() === 'A') || buttons[0];
+
+        const node = Array.from(document.querySelectorAll('.round-j7oVl2yI, [data-tooltip], [aria-label], button, [role="button"]')).find(el => {
+            const tooltip = (el.getAttribute && (el.getAttribute('data-tooltip') || '') || '').trim().toLowerCase();
+            const aria = (el.getAttribute && (el.getAttribute('aria-label') || '') || '').trim().toLowerCase();
+            const text = (el.textContent || '').trim();
+            if (tooltip === 'indicator_preset' || aria === 'indicator_preset') return true;
+            if (tooltip === 'a' || aria === 'a') return true;
+            if (text === 'I' || text === 'A') return true;
+            return false;
+        });
+
+        if (!node) return null;
+        if (node.tagName === 'BUTTON' || node.getAttribute('role') === 'button' || node.tagName === 'A') {
+            return node;
+        }
+        return node.closest('button, [role="button"], a') || node;
+    }
+
+    function waitForFavoriteIndicatorButton(timeoutMs = 8000) {
+        const interval = 250;
+        const deadline = Date.now() + timeoutMs;
+        return new Promise(resolve => {
+            const check = () => {
+                const button = findFavoriteIndicatorButton();
+                if (button) return resolve(button);
+                if (Date.now() >= deadline) return resolve(null);
+                setTimeout(check, interval);
+            };
+            check();
+        });
+    }
+
+    function dispatchClick(element) {
+        element.focus?.();
+        const pointerEnter = new PointerEvent('pointerenter', { bubbles: true, cancelable: true, pointerType: 'mouse', view: window });
+        const mouseEnter = new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window });
+        const pointerOver = new PointerEvent('pointerover', { bubbles: true, cancelable: true, pointerType: 'mouse', view: window });
+        const mouseOver = new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window });
+        const pointerDown = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', view: window });
+        const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
+        const mouseUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
+        const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+        element.dispatchEvent(pointerEnter);
+        element.dispatchEvent(mouseEnter);
+        element.dispatchEvent(pointerOver);
+        element.dispatchEvent(mouseOver);
+        element.dispatchEvent(pointerDown);
+        element.dispatchEvent(mouseDown);
+        element.dispatchEvent(mouseUp);
+        if (!element.dispatchEvent(clickEvent)) {
+            element.click();
+        }
+    }
+
     function isDexscreenerTokenPage() {
         return /^\/solana\/[A-Za-z0-9]{32,44}(?:\/.*)?$/.test(location.pathname);
+    }
+
+    async function applyFavoriteIndicatorsPreset() {
+        const button = await waitForFavoriteIndicatorButton();
+        if (!button || button.dataset.dexFavoriteIndicatorsClicked === '1') return false;
+        button.dataset.dexFavoriteIndicatorsClicked = '1';
+        dispatchClick(button);
+        return true;
+    }
+
+    function observeTokenPage() {
+        if (!isDexscreenerTokenPage()) return;
+        let observer;
+        const cleanup = () => {
+            if (observer) {
+                observer.disconnect();
+                observer = null;
+            }
+        };
+
+        const tryApply = async () => {
+            if (await applyFavoriteIndicatorsPreset()) {
+                cleanup();
+            }
+        };
+
+        void tryApply();
+        observer = new MutationObserver(() => {
+            void tryApply();
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        setTimeout(cleanup, 12000);
     }
 
     function observeDexscreener() {
@@ -1622,18 +1874,25 @@
         monitorSortBy = monitorSettings.sortBy;
         monitorSortDescending = monitorSettings.sortDescending;
         autoMonitorNewPairs = monitorSettings.autoMonitorNewPairs;
-        scanDexscreenerLinks();
-        createFloatingControls();
-        if (monitorSettings.restoreMonitorsOnLoad) {
-            restoreMonitors();
-        }
-        if (autoMonitorNewPairs) addNewMcapMonitors();
+        loadPairInfoCache();
+        scheduleIdle(() => {
+            scanDexscreenerLinks();
+            createFloatingControls();
+            if (monitorSettings.restoreMonitorsOnLoad) {
+                restoreMonitors();
+            }
+            if (autoMonitorNewPairs) addNewMcapMonitors();
+        });
         const observer = new MutationObserver(debouncedScanDexscreenerLinks);
-        observer.observe(document.body, { childList: true, subtree: true });
+        observer.observe(getDexScreenerMutationRoot(), { childList: true, subtree: true });
     }
 
-    if (location.hostname.includes('dexscreener') && !isDexscreenerTokenPage()) {
-        observeDexscreener();
+    if (location.hostname.includes('dexscreener')) {
+        if (isDexscreenerTokenPage()) {
+            observeTokenPage();
+        } else {
+            observeDexscreener();
+        }
     }
 
     if (typeof GM_registerMenuCommand === 'function') {
