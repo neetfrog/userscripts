@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Instagram Cleaner Pro (Smart Engine v4.9 Hardened + AutoLiker)
+// @name         Instagram Cleaner Pro (Smart Engine v4.9 Hardened)
 // @namespace    http://tampermonkey.net/
 // @version      4.9.1
-// @description  Modular Instagram feed filter + hardened ad detection + human-like auto-liker
+// @description  Modular Instagram feed filter + hardened ad detection
 // @match        *://www.instagram.com/*
 // @include      *instagram.com/*
 // @grant        GM.getValue
@@ -24,53 +24,11 @@
         hideVideos: true,
         hideLiked: true,
         softMode: false,
-        debugMode: false,
-        autoLikeEnabled: false,
-        autoLikeMinDelay: 1500,
-        autoLikeMaxDelay: 4000,
-        autoLikeScrollDelay: 2000,
-        autoLikeBatchSize: 3,
-        autoLikeSkipPercent: 30,
-        humanizeAutoLiker: true,
-        autoLikeOpenStories: true,
-        humanViewMinDelay: 1500,
-        humanViewMaxDelay: 3000,
-        humanPauseAfterLikes: 4,
-        humanPauseMinDelay: 10000,
-        humanPauseMaxDelay: 20000,
-        humanBackscrollChance: 20,
-        humanPeekChance: 20,
-        humanHoverChance: 50
+        debugMode: false
     };
 
     let settings = { ...defaults };
     const processed = new Set();
-    let autoLikeRunning = false;
-    let autoLikeTimer = null;
-    let autoLikeScrollTimer = null;
-    let likesSincePause = 0;
-    let likesThisSession = 0;
-    const autoLikeStats = {
-        liked: 0,
-        skipped: 0,
-        failed: 0,
-        steps: 0
-    };
-
-    function resetAutoLikeStats() {
-        autoLikeStats.liked = 0;
-        autoLikeStats.skipped = 0;
-        autoLikeStats.failed = 0;
-        autoLikeStats.steps = 0;
-    }
-
-    function logAutoLikeStats(prefix = '[AutoLiker]') {
-        console.log(`${prefix} liked=${autoLikeStats.liked} skipped=${autoLikeStats.skipped} failed=${autoLikeStats.failed} steps=${autoLikeStats.steps} sessionLikes=${likesThisSession}`);
-    }
-
-    function logAutoLiker(...args) {
-        console.log('[AutoLiker]', ...args);
-    }
 
     // ----------------------------
     // LOAD / SAVE
@@ -244,451 +202,6 @@
     // ----------------------------
     // AUTO LIKER
     // ----------------------------
-    function isSinglePostView() {
-        const path = window.location.pathname.toLowerCase();
-        return /^\/(p|reel|tv)\/[\w-]+/.test(path);
-    }
-
-    function isNavigationalPostLink(element) {
-        if (!element || element.nodeType !== 1) return false;
-        const href = (element.getAttribute('href') || '').toLowerCase();
-        return /(^\/(p|reel|tv)\/)|\/(p|reel|tv)\//.test(href);
-    }
-
-    function normalizeLikeTarget(element) {
-        if (!element) return null;
-        const target = element.closest('button, [role="button"]') || element;
-        return isNavigationalPostLink(target) ? null : target;
-    }
-
-    function findLikeControl(post) {
-        if (isHiddenPost(post)) return null;
-
-        const button = post.querySelector('button[aria-label*="like"], button[aria-label*="Unlike"], [role="button"][aria-label*="like"], [role="button"][aria-label*="Unlike"]');
-        if (button && !isNavigationalPostLink(button)) return button;
-
-        const candidates = [...post.querySelectorAll('[aria-label]')]
-            .map(el => ({
-                el,
-                label: (el.getAttribute('aria-label') || '').trim().toLowerCase()
-            }))
-            .filter(item => item.label.includes('like') && !isNavigationalPostLink(item.el));
-
-        if (!candidates.length) return null;
-
-        const unliked = candidates.find(item => !item.label.includes('unlike')) || candidates[0];
-        return normalizeLikeTarget(unliked.el);
-    }
-
-    function isPostLiked(post) {
-        return [...post.querySelectorAll('[aria-label]')]
-            .some(el => {
-                const label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-                return label.includes('unlike');
-            });
-    }
-
-    function simulateMouseClick(target) {
-        if (!target) return false;
-        const rect = target.getBoundingClientRect();
-        const clientX = rect.left + rect.width / 2;
-        const clientY = rect.top + rect.height / 2;
-        const events = ['pointerdown', 'mousedown', 'mouseup', 'click'];
-        for (const type of events) {
-            const event = new MouseEvent(type, {
-                bubbles: true,
-                cancelable: true,
-                view: window,
-                clientX,
-                clientY,
-                button: 0
-            });
-            target.dispatchEvent(event);
-        }
-        return true;
-    }
-
-    function scrollIntoViewForInteraction(target) {
-        if (!target) return;
-        const article = target.closest('article') || target;
-        article.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
-        const rect = target.getBoundingClientRect();
-        if (rect.top < 0 || rect.bottom > window.innerHeight) {
-            window.scrollBy({
-                top: Math.round(rect.top - (window.innerHeight / 2) + (rect.height / 2)),
-                left: 0,
-                behavior: 'smooth'
-            });
-        }
-    }
-
-    function safeClick(target) {
-        if (!target) return false;
-        const navTarget = target.closest('a') || target;
-        if (isNavigationalPostLink(navTarget)) {
-            if (settings.debugMode) console.warn('[AutoLiker] prevented navigation click on post link', navTarget);
-            return false;
-        }
-
-        try {
-            scrollIntoViewForInteraction(target);
-            if (typeof target.click === 'function') {
-                target.click();
-            } else {
-                simulateMouseClick(target);
-            }
-            return true;
-        } catch (err) {
-            if (settings.debugMode) console.warn('[AutoLiker] safeClick failed', err, target);
-            try {
-                return simulateMouseClick(target);
-            } catch (innerErr) {
-                if (settings.debugMode) console.warn('[AutoLiker] simulateMouseClick failed', innerErr, target);
-                return false;
-            }
-        }
-    }
-
-    function getPostUsername(post) {
-        if (!post) return null;
-        const header = post.querySelector('header');
-        const source = header || post;
-
-        const authorAnchor = source.querySelector('a[href^="/"]');
-        if (authorAnchor) {
-            const text = (authorAnchor.textContent || '').trim();
-            if (text) return text.split('\n')[0].trim().toLowerCase();
-
-            const href = authorAnchor.getAttribute('href') || '';
-            const parts = href.split('/').filter(Boolean);
-            if (parts.length === 1) return parts[0].toLowerCase();
-            if (parts.length === 2 && parts[0] === 'u') return parts[1].toLowerCase();
-        }
-
-        const imgAlt = source.querySelector('img[alt]')?.alt;
-        if (imgAlt) {
-            const match = imgAlt.match(/^(.+?)(?:'s|’s)?\s*profile picture$/i);
-            if (match) return match[1].trim().toLowerCase();
-        }
-
-        return null;
-    }
-
-    function hasStoryRing(element, depth = 0) {
-        if (!element || depth > 3) return false;
-        if (element.querySelector('canvas, svg, circle, path')) return true;
-
-        const className = (element.className || '').toString().toLowerCase();
-        if (/(story|ring|gradient|active)/.test(className)) return true;
-
-        const style = window.getComputedStyle(element);
-        if (style.backgroundImage && style.backgroundImage !== 'none' && style.backgroundImage.includes('gradient')) return true;
-        if (style.boxShadow && style.boxShadow !== 'none') return true;
-        if (style.borderImage && style.borderImage !== 'none') return true;
-
-        const borderWidth = parseFloat(style.borderTopWidth) + parseFloat(style.borderRightWidth) + parseFloat(style.borderBottomWidth) + parseFloat(style.borderLeftWidth);
-        if (borderWidth > 0 && style.borderTopColor !== 'transparent') return true;
-
-        return hasStoryRing(element.parentElement, depth + 1);
-    }
-
-    function findStoryControlForPost(post) {
-        if (!post) return null;
-
-        const avatarImg = post.querySelector('img[alt$="profile picture"], img[alt*="profile picture"]');
-        if (avatarImg) {
-            const avatarLink = avatarImg.closest('span[role="link"]') || avatarImg.closest('a[href^="/"]');
-            const ringContainer = avatarImg.closest('div[role="button"]') || avatarLink || avatarImg.parentElement;
-
-            if (ringContainer && hasStoryRing(ringContainer)) {
-                const innerClick = ringContainer.querySelector('[role="link"], a[href^="/"], button, [role="button"]');
-                return innerClick || ringContainer;
-            }
-        }
-
-        const candidates = [...post.querySelectorAll('div[role="button"], [role="button"], [role="link"], a, button')];
-        for (const candidate of candidates) {
-            if (hasStoryRing(candidate) || candidate.querySelector('canvas, svg, circle, path')) {
-                const innerClick = candidate.querySelector('[role="link"], a[href^="/"], button, [role="button"]');
-                return innerClick || candidate;
-            }
-        }
-
-        if (settings.debugMode) console.log('[AutoLiker] no per-post story ring found for', post);
-        return null;
-    }
-
-    async function closeStory() {
-        const escapeEvent = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
-        document.dispatchEvent(escapeEvent);
-        await new Promise(resolve => window.setTimeout(resolve, 300));
-        const closeButton = document.querySelector('button[aria-label*="Close"], button[class*="Close"], div[role="button"][aria-label*="Close"]');
-        if (closeButton) closeButton.click();
-    }
-
-    async function openStoryForPost(post, username) {
-        const target = findStoryControlForPost(post);
-        if (!target) {
-            if (settings.debugMode) console.log('[AutoLiker] no active story ring for', username, post);
-            return false;
-        }
-
-        if (settings.debugMode) console.log('[AutoLiker] opening story for', username, target);
-        const clicked = safeClick(target);
-        if (!clicked) {
-            if (settings.debugMode) console.warn('[AutoLiker] failed to click story ring for', username, target);
-            return false;
-        }
-
-        const duration = randomInt(3000, 6000);
-        await new Promise(resolve => window.setTimeout(resolve, duration));
-        await closeStory();
-        return true;
-    }
-
-    function getUnlikedPosts() {
-        const articles = [...document.querySelectorAll('article')];
-        const unliked = articles.filter(post => {
-            if (isHiddenPost(post)) return false;
-            return !isPostLiked(post) && !!findLikeControl(post);
-        });
-        logAutoLiker('scanned articles=', articles.length, 'unliked candidates=', unliked.length);
-        return unliked;
-    }
-
-    function randomBetween(min, max) {
-        return min + Math.random() * (max - min);
-    }
-
-    function randomInt(min, max) {
-        return Math.floor(randomBetween(min, max + 1));
-    }
-
-    function chance(percent) {
-        return Math.random() * 100 < percent;
-    }
-
-    function humanDelay(min, max) {
-        return Math.round(min + Math.random() * (max - min));
-    }
-
-    function maybeHover(target) {
-        if (!target || !chance(settings.humanHoverChance)) return;
-
-        const rect = target.getBoundingClientRect();
-        const x = rect.left + rect.width / 2 + randomBetween(-rect.width * 0.1, rect.width * 0.1);
-        const y = rect.top + rect.height / 2 + randomBetween(-rect.height * 0.1, rect.height * 0.1);
-
-        target.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
-        target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: x, clientY: y }));
-    }
-
-    async function humanViewPost(post) {
-        if (!settings.humanizeAutoLiker) return;
-        post.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
-        await new Promise(resolve => window.setTimeout(resolve, 100));
-        window.scrollBy({ top: -Math.round(window.innerHeight * 0.08), left: 0, behavior: 'smooth' });
-        await new Promise(resolve => window.setTimeout(resolve, humanDelay(settings.humanViewMinDelay, settings.humanViewMaxDelay)));
-    }
-
-    function estimateLikes() {
-        const avgLikeDelay = (settings.autoLikeMinDelay + settings.autoLikeMaxDelay) / 2;
-        const avgAfterLikeDelay = 350;
-        const avgBatchClicks = settings.autoLikeBatchSize * (1 - settings.autoLikeSkipPercent / 100);
-        const avgPeekDelay = settings.humanPeekChance / 100 * ((700 + 1500) / 2 + 500);
-        const avgStoryDelay = settings.autoLikeOpenStories ? (3000 + 6000) / 2 + 900 : 0;
-        const avgPauseDelay = settings.humanizeAutoLiker && settings.humanPauseAfterLikes > 0
-            ? ((settings.humanPauseMinDelay + settings.humanPauseMaxDelay) / 2) / settings.humanPauseAfterLikes
-            : 0;
-        const avgBatchTime = settings.autoLikeBatchSize * (avgLikeDelay + avgAfterLikeDelay + avgPeekDelay + avgStoryDelay + avgPauseDelay) + settings.autoLikeScrollDelay + 700;
-        if (avgBatchTime <= 0 || avgBatchClicks <= 0) {
-            return { perHour: 0, perDay: 0 };
-        }
-
-        const perHour = Math.max(0, Math.round((60 * 60 * 1000 / avgBatchTime) * avgBatchClicks));
-        const perDay = Math.max(0, Math.round((24 * 60 * 60 * 1000 / avgBatchTime) * avgBatchClicks));
-        return { perHour, perDay };
-    }
-
-    function scrollToNext() {
-        const articles = [...document.querySelectorAll('article')];
-        const lastArticle = articles[articles.length - 1];
-        if (!lastArticle) return;
-        lastArticle.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
-
-    function maybeHumanScroll() {
-        if (!settings.humanizeAutoLiker) return;
-        const articles = [...document.querySelectorAll('article')];
-        if (!articles.length) return;
-
-        if (chance(settings.humanBackscrollChance) && articles.length > 4) {
-            const index = Math.max(0, articles.length - 1 - randomInt(1, Math.min(4, articles.length - 1)));
-            articles[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
-            return;
-        }
-
-        const index = Math.min(articles.length - 1, randomInt(Math.max(0, articles.length - 3), articles.length - 1));
-        articles[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-
-    async function maybeTakeLongBreak() {
-        if (!settings.humanizeAutoLiker) return false;
-        if (likesSincePause < settings.humanPauseAfterLikes) return false;
-
-        likesSincePause = 0;
-        const pause = humanDelay(settings.humanPauseMinDelay, settings.humanPauseMaxDelay);
-        if (settings.debugMode) console.log(`[AutoLiker] taking human pause for ${pause}ms`);
-        await new Promise(resolve => window.setTimeout(resolve, pause));
-        return true;
-    }
-
-    async function autoLikeStep() {
-        logAutoLiker('autoLikeStep called', 'enabled=', settings.autoLikeEnabled);
-        if (!settings.autoLikeEnabled) return;
-
-        if (isSinglePostView()) {
-            logAutoLiker('single-post/reel detail view detected, pausing actions until feed returns');
-            autoLikeTimer = window.setTimeout(autoLikeStep, settings.autoLikeScrollDelay);
-            return;
-        }
-
-        if (await maybeTakeLongBreak()) {
-            const afterBreakDelay = humanDelay(settings.autoLikeMinDelay, settings.autoLikeMaxDelay);
-            logAutoLiker('resuming after break in', afterBreakDelay, 'ms');
-            return autoLikeTimer = window.setTimeout(autoLikeStep, afterBreakDelay);
-        }
-
-        const posts = getUnlikedPosts();
-        if (!posts.length) {
-            logAutoLiker('no unliked posts found, scrolling page');
-            maybeHumanScroll();
-            autoLikeScrollTimer = window.setTimeout(autoLikeStep, settings.autoLikeScrollDelay);
-            return;
-        }
-
-        logAutoLiker('autoLikeStep start, found posts=', posts.length, 'batchSize=', settings.autoLikeBatchSize);
-        const batch = posts.slice(0, settings.autoLikeBatchSize);
-        for (let index = 0; index < batch.length; index += 1) {
-            const post = batch[index];
-            await humanViewPost(post);
-
-            const username = getPostUsername(post);
-            logAutoLiker(`processing post ${index + 1}/${batch.length}`, 'username=', username || 'unknown');
-            let clickTarget = findLikeControl(post);
-            if (!clickTarget) {
-                logAutoLiker('no like button found for post', username || 'unknown');
-                continue;
-            }
-            logAutoLiker('found clickTarget for', username || 'unknown', clickTarget);
-
-            if (chance(settings.humanPeekChance)) {
-                logAutoLiker('peeking post before action', username || 'unknown');
-                await new Promise(resolve => window.setTimeout(resolve, humanDelay(700, 1500)));
-                window.scrollBy({ top: randomInt(50, 180), left: 0, behavior: 'smooth' });
-                await new Promise(resolve => window.setTimeout(resolve, humanDelay(400, 900)));
-            }
-
-            maybeHover(clickTarget);
-
-            const skipChance = settings.autoLikeSkipPercent / 100;
-            if (Math.random() < skipChance) {
-                autoLikeStats.skipped += 1;
-                logAutoLiker('skipping post randomly', username || 'unknown');
-                await new Promise(resolve => window.setTimeout(resolve, humanDelay(500, 1200)));
-                continue;
-            }
-
-            const delay = humanDelay(settings.autoLikeMinDelay, settings.autoLikeMaxDelay);
-            logAutoLiker('waiting to like post in', delay, 'ms', 'user=', username || 'unknown');
-            await new Promise(resolve => window.setTimeout(resolve, delay));
-
-            if (username && settings.autoLikeOpenStories) {
-                const storyOpened = await openStoryForPost(post, username);
-                if (!storyOpened) {
-                    logAutoLiker('story open failed or skipped for', username || 'unknown');
-                }
-                if (storyOpened) {
-                    logAutoLiker('story opened successfully, waiting for feed DOM to settle', username || 'unknown');
-                    await new Promise(resolve => window.setTimeout(resolve, 600));
-                    clickTarget = findLikeControl(post);
-                    logAutoLiker('after story close, clickTarget=', clickTarget, 'for', username || 'unknown');
-                    if (!clickTarget) {
-                        logAutoLiker('like control missing after story open for', username || 'unknown');
-                        continue;
-                    }
-                }
-            } else if (username) {
-                logAutoLiker('story opening disabled, continuing with like for', username || 'unknown');
-            }
-
-            const clicked = safeClick(clickTarget);
-            logAutoLiker('click attempted for', username || 'unknown', 'clickTarget=', clickTarget, 'clicked=', !!clicked);
-            if (!clicked) {
-                autoLikeStats.failed += 1;
-                logAutoLiker('failed click target', clickTarget, 'user', username || 'unknown');
-                continue;
-            }
-
-            await new Promise(resolve => window.setTimeout(resolve, 300));
-            const likedVerified = isPostLiked(post);
-            logAutoLiker('liked verified=', likedVerified, 'for', username || 'unknown');
-            if (!likedVerified) {
-                autoLikeStats.failed += 1;
-                logAutoLiker('click did not result in like state for', username || 'unknown', 'clickTarget', clickTarget);
-                continue;
-            }
-
-            autoLikeStats.liked += 1;
-            likesSincePause += 1;
-            likesThisSession += 1;
-            console.log('[AutoLiker] liked post user', username || 'unknown', 'total liked', autoLikeStats.liked, 'sessionLikes', likesThisSession);
-
-            await new Promise(resolve => window.setTimeout(resolve, humanDelay(200, 500)));
-        }
-        autoLikeStats.steps += 1;
-        logAutoLikeStats('[AutoLiker] batch complete');
-
-        maybeHumanScroll();
-        const nextDelay = settings.autoLikeScrollDelay + humanDelay(200, 1200);
-        autoLikeScrollTimer = window.setTimeout(() => {
-            autoLikeTimer = window.setTimeout(autoLikeStep, nextDelay);
-        }, settings.autoLikeScrollDelay);
-    }
-
-    function startAutoLiker() {
-        if (autoLikeRunning) return;
-        autoLikeRunning = true;
-        resetAutoLikeStats();
-        likesThisSession = 0;
-        likesSincePause = 0;
-        logAutoLiker('started', 'openStories=', settings.autoLikeOpenStories, 'batchSize=', settings.autoLikeBatchSize, 'skipPercent=', settings.autoLikeSkipPercent, 'humanize=', settings.humanizeAutoLiker);
-        autoLikeStep();
-    }
-
-    function stopAutoLiker() {
-        autoLikeRunning = false;
-        logAutoLikeStats('[AutoLiker] stopped');
-        if (autoLikeTimer) {
-            window.clearTimeout(autoLikeTimer);
-            autoLikeTimer = null;
-        }
-        if (autoLikeScrollTimer) {
-            window.clearTimeout(autoLikeScrollTimer);
-            autoLikeScrollTimer = null;
-        }
-        logAutoLiker('stopped');
-    }
-
-    function toggleAutoLiker(enabled) {
-        settings.autoLikeEnabled = enabled;
-        if (enabled) {
-            startAutoLiker();
-        } else {
-            stopAutoLiker();
-        }
-    }
-
     // ----------------------------
     // SETTINGS UI
     // ----------------------------
@@ -735,28 +248,6 @@
             <label><input type="checkbox" id="hideLiked"> Hide Liked</label><br>
             <label><input type="checkbox" id="softMode"> Soft Mode</label><br>
             <label><input type="checkbox" id="debugMode"> Debug Mode</label><br>
-            <hr style="border-color: rgba(255,255,255,0.2); margin: 8px 0;">
-            <label><input type="checkbox" id="autoLikeEnabled"> Enable AutoLiker</label><br>
-            <label>Like delay min (sec): <input type="number" id="autoLikeMinDelay" style="width: 60px;" value="${settings.autoLikeMinDelay / 1000}"></label><br>
-            <label>Like delay max (sec): <input type="number" id="autoLikeMaxDelay" style="width: 60px;" value="${settings.autoLikeMaxDelay / 1000}"></label><br>
-            <label>Scroll delay (sec): <input type="number" id="autoLikeScrollDelay" style="width: 60px;" value="${settings.autoLikeScrollDelay / 1000}"></label><br>
-            <label>Batch size: <input type="number" id="autoLikeBatchSize" style="width: 40px;" value="${settings.autoLikeBatchSize}"></label><br>
-            <label>Skip chance (%): <input type="number" id="autoLikeSkipPercent" style="width: 40px;" min="0" max="100" value="${settings.autoLikeSkipPercent}"></label><br>
-                <label><input type="checkbox" id="humanizeAutoLiker"> Humanize AutoLiker</label><br>
-                <label><input type="checkbox" id="autoLikeOpenStories"> Open stories before liking</label><br>
-            <label>View time min (sec): <input type="number" id="humanViewMinDelay" style="width: 60px;" value="${settings.humanViewMinDelay / 1000}"></label><br>
-            <label>View time max (sec): <input type="number" id="humanViewMaxDelay" style="width: 60px;" value="${settings.humanViewMaxDelay / 1000}"></label><br>
-            <label>Pause after likes: <input type="number" id="humanPauseAfterLikes" style="width: 40px;" value="${settings.humanPauseAfterLikes}"></label><br>
-            <label>Pause length min (sec): <input type="number" id="humanPauseMinDelay" style="width: 60px;" value="${settings.humanPauseMinDelay / 1000}"></label><br>
-            <label>Pause length max (sec): <input type="number" id="humanPauseMaxDelay" style="width: 60px;" value="${settings.humanPauseMaxDelay / 1000}"></label><br>
-            <label>Backscroll chance (%): <input type="number" id="humanBackscrollChance" style="width: 40px;" min="0" max="100" value="${settings.humanBackscrollChance}"></label><br>
-            <label>Peek chance (%): <input type="number" id="humanPeekChance" style="width: 40px;" min="0" max="100" value="${settings.humanPeekChance}"></label><br>
-            <label>Hover chance (%): <input type="number" id="humanHoverChance" style="width: 40px;" min="0" max="100" value="${settings.humanHoverChance}"></label><br>
-            <div style="margin-top:8px;font-size:12px;">
-                <strong>Estimated likes:</strong><br>
-                <span id="autoLikeEstimateHour">0</span> per hour ·
-                <span id="autoLikeEstimateDay">0</span> per 24h
-            </div>
         `;
 
         btn.onclick = () => {
@@ -773,65 +264,21 @@
             panel.querySelector("#hideLiked").checked = settings.hideLiked;
             panel.querySelector("#softMode").checked = settings.softMode;
             panel.querySelector("#debugMode").checked = settings.debugMode;
-            panel.querySelector("#autoLikeEnabled").checked = settings.autoLikeEnabled;
-            panel.querySelector("#autoLikeMinDelay").value = settings.autoLikeMinDelay / 1000;
-            panel.querySelector("#autoLikeMaxDelay").value = settings.autoLikeMaxDelay / 1000;
-            panel.querySelector("#autoLikeScrollDelay").value = settings.autoLikeScrollDelay / 1000;
-            panel.querySelector("#autoLikeBatchSize").value = settings.autoLikeBatchSize;
-            panel.querySelector("#autoLikeSkipPercent").value = settings.autoLikeSkipPercent;
-            panel.querySelector("#humanizeAutoLiker").checked = settings.humanizeAutoLiker;
-            panel.querySelector("#autoLikeOpenStories").checked = settings.autoLikeOpenStories;
-            panel.querySelector("#humanViewMinDelay").value = settings.humanViewMinDelay / 1000;
-            panel.querySelector("#humanViewMaxDelay").value = settings.humanViewMaxDelay / 1000;
-            panel.querySelector("#humanPauseAfterLikes").value = settings.humanPauseAfterLikes;
-            panel.querySelector("#humanPauseMinDelay").value = settings.humanPauseMinDelay / 1000;
-            panel.querySelector("#humanPauseMaxDelay").value = settings.humanPauseMaxDelay / 1000;
-            panel.querySelector("#humanBackscrollChance").value = settings.humanBackscrollChance;
-            panel.querySelector("#humanPeekChance").value = settings.humanPeekChance;
-            panel.querySelector("#humanHoverChance").value = settings.humanHoverChance;
-            const estimate = estimateLikes();
-            panel.querySelector("#autoLikeEstimateHour").innerText = estimate.perHour;
-            panel.querySelector("#autoLikeEstimateDay").innerText = estimate.perDay;
         };
 
         bind();
 
         panel.addEventListener("change", async () => {
-            const wasAutoLikeEnabled = settings.autoLikeEnabled;
-
             settings.hideAds = panel.querySelector("#hideAds").checked;
             settings.hideSuggested = panel.querySelector("#hideSuggested").checked;
             settings.hideVideos = panel.querySelector("#hideVideos").checked;
             settings.hideLiked = panel.querySelector("#hideLiked").checked;
             settings.softMode = panel.querySelector("#softMode").checked;
             settings.debugMode = panel.querySelector("#debugMode").checked;
-            settings.autoLikeEnabled = panel.querySelector("#autoLikeEnabled").checked;
-            settings.autoLikeMinDelay = (Number(panel.querySelector("#autoLikeMinDelay").value) || defaults.autoLikeMinDelay / 1000) * 1000;
-            settings.autoLikeMaxDelay = (Number(panel.querySelector("#autoLikeMaxDelay").value) || defaults.autoLikeMaxDelay / 1000) * 1000;
-            settings.autoLikeScrollDelay = (Number(panel.querySelector("#autoLikeScrollDelay").value) || defaults.autoLikeScrollDelay / 1000) * 1000;
-            settings.autoLikeBatchSize = Math.max(1, Number(panel.querySelector("#autoLikeBatchSize").value) || defaults.autoLikeBatchSize);
-            settings.autoLikeSkipPercent = Math.min(100, Math.max(0, Number(panel.querySelector("#autoLikeSkipPercent").value) || defaults.autoLikeSkipPercent));
-            settings.humanizeAutoLiker = panel.querySelector("#humanizeAutoLiker").checked;
-            settings.autoLikeOpenStories = panel.querySelector("#autoLikeOpenStories").checked;
-            settings.humanViewMinDelay = (Number(panel.querySelector("#humanViewMinDelay").value) || defaults.humanViewMinDelay / 1000) * 1000;
-            settings.humanViewMaxDelay = (Number(panel.querySelector("#humanViewMaxDelay").value) || defaults.humanViewMaxDelay / 1000) * 1000;
-            settings.humanPauseAfterLikes = Math.max(1, Number(panel.querySelector("#humanPauseAfterLikes").value) || defaults.humanPauseAfterLikes);
-            settings.humanPauseMinDelay = (Number(panel.querySelector("#humanPauseMinDelay").value) || defaults.humanPauseMinDelay / 1000) * 1000;
-            settings.humanPauseMaxDelay = (Number(panel.querySelector("#humanPauseMaxDelay").value) || defaults.humanPauseMaxDelay / 1000) * 1000;
-            settings.humanBackscrollChance = Math.min(100, Math.max(0, Number(panel.querySelector("#humanBackscrollChance").value) || defaults.humanBackscrollChance));
-            settings.humanPeekChance = Math.min(100, Math.max(0, Number(panel.querySelector("#humanPeekChance").value) || defaults.humanPeekChance));
-            settings.humanHoverChance = Math.min(100, Math.max(0, Number(panel.querySelector("#humanHoverChance").value) || defaults.humanHoverChance));
 
             await saveSettings();
             processed.clear();
             handleFeed();
-            const estimate = estimateLikes();
-            panel.querySelector("#autoLikeEstimateHour").innerText = estimate.perHour;
-            panel.querySelector("#autoLikeEstimateDay").innerText = estimate.perDay;
-
-            if (settings.autoLikeEnabled !== wasAutoLikeEnabled) {
-                toggleAutoLiker(settings.autoLikeEnabled);
-            }
         });
     }
 
@@ -880,10 +327,6 @@
         createSettingsUI();
         initObserver();
         initPreCleaner();
-
-        if (settings.autoLikeEnabled) {
-            startAutoLiker();
-        }
     }
 
     init();
