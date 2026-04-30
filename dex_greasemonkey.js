@@ -52,8 +52,8 @@
     }
 
     function getCopyWrapper(anchor) {
-        if (!anchor) return null;
-        return anchor.querySelector('span[data-dex-copy-wrapper="1"]');
+        const next = anchor.nextElementSibling;
+        return next && next.dataset?.dexCopyWrapper === '1' ? next : null;
     }
 
     function getRowFromAnchor(anchor) {
@@ -66,8 +66,8 @@
 
     function cleanupCopyWrappers() {
         document.querySelectorAll('span[data-dex-copy-wrapper="1"]').forEach(wrapper => {
-            const anchor = wrapper.closest('a.ds-dex-table-row');
-            if (!anchor || getPairIdFromHref(anchor.href) !== wrapper.dataset.pairId) {
+            const anchor = wrapper.previousElementSibling;
+            if (!anchor || anchor.tagName !== 'A' || getPairIdFromHref(anchor.href) !== wrapper.dataset.pairId) {
                 wrapper.remove();
             }
         });
@@ -572,8 +572,8 @@
             btn.dataset.dexActionButton = '1';
         });
         wrapper.append(copyButton, gmgnButton, xcaButton, xtickerButton, bubbleButton, pumpFunButton, solscanButton, dexToolsButton, telegramButton);
-        row.appendChild(wrapper);
-        return wrapper;
+        anchor.insertAdjacentElement('afterend', wrapper);
+        return null;
     }
 
     const debouncedScanDexscreenerLinks = debounce(scanDexscreenerLinks, 100);
@@ -587,6 +587,7 @@
             const existing = getCopyWrapper(anchor);
             if (existing) return;
             insertCopyButton(anchor);
+            anchor.dataset.dexEnhanced = '1';
         });
     }
 
