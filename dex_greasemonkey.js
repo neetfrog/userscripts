@@ -17,8 +17,42 @@
         return normalized.trim();
     }
 
-    function buildResult(pairs) {
-        return Array.from(pairs.keys()).join("\n");
+    function buildResult(pairs, mode = 'tokens') {
+        return Array.from(pairs.values())
+            .map(entry => mode === 'contracts' ? entry.pairAddress || entry.tokenAddress : entry.tokenAddress || entry.pairAddress)
+            .filter(Boolean)
+            .join("\n");
+    }
+
+    function getPrimaryAddress(pair) {
+        return pair?.baseToken?.address || pair?.pairAddress || '';
+    }
+
+    function getPairAddress(pair) {
+        return pair?.pairAddress || pair?.baseToken?.address || '';
+    }
+
+    async function withPair(pairId, callback, failureMessage) {
+        try {
+            const pair = await fetchPairInfo(pairId);
+            await callback(pair);
+        } catch (e) {
+            console.warn(failureMessage, e);
+            alert(failureMessage);
+        }
+    }
+
+    function openPairLink(pairId, urlBuilder, failureMessage, options = {}) {
+        return withPair(pairId, async pair => {
+            const url = typeof urlBuilder === 'function' ? urlBuilder(pair) : urlBuilder;
+            if (options.newTab) {
+                window.open(url, '_blank');
+            } else if (options.overlayTitle) {
+                showIframeOverlay(options.overlayTitle, url);
+            } else {
+                window.open(url, '_blank');
+            }
+        }, failureMessage);
     }
 
     function writeClipboard(text) {
@@ -66,10 +100,32 @@
     }
 
     function cleanupCopyWrappers() {
+        const anchors = Array.from(document.querySelectorAll('a[href*="/solana/"]'));
         document.querySelectorAll('span[data-dex-copy-wrapper="1"]').forEach(wrapper => {
-            const anchor = wrapper.previousElementSibling;
-            if (!anchor || anchor.tagName !== 'A' || getPairIdFromHref(anchor.href) !== wrapper.dataset.pairId) {
+            const pairId = wrapper.dataset.pairId;
+            if (!pairId) {
                 wrapper.remove();
+                orphanWrapperTimes.delete(wrapper);
+                return;
+            }
+
+            const anchor = anchors.find(a => getPairIdFromHref(a.href) === pairId);
+            if (anchor) {
+                if (anchor.nextElementSibling !== wrapper) {
+                    anchor.insertAdjacentElement('afterend', wrapper);
+                }
+                orphanWrapperTimes.delete(wrapper);
+                return;
+            }
+
+            const orphanSince = orphanWrapperTimes.get(wrapper);
+            if (!orphanSince) {
+                orphanWrapperTimes.set(wrapper, Date.now());
+                return;
+            }
+            if (Date.now() - orphanSince > 2500) {
+                wrapper.remove();
+                orphanWrapperTimes.delete(wrapper);
             }
         });
     }
@@ -88,7 +144,22 @@
     const pairInfoCacheKey = 'dex-enhance-pair-info-cache';
     const pairInfoCacheTTL = 5 * 60 * 1000;
     const pairInfoCache = new Map();
+    const orphanWrapperTimes = new Map();
+    const injectedDomSelectors = '#dex-header-quick-links, [data-dex-copy-wrapper="1"], #dex-iframe-overlay, #dex-pair-clipboard-overlay';
+    const initialScanDelay = 700;
     let copyPairsInProgress = false;
+
+    function isSelfMutation(record) {
+        if (record.target && record.target.closest && record.target.closest(injectedDomSelectors)) {
+            return true;
+        }
+        for (const node of Array.from(record.addedNodes).concat(Array.from(record.removedNodes))) {
+            if (node.nodeType === 1 && node.closest && node.closest(injectedDomSelectors)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     function loadPairInfoCache() {
         try {
@@ -247,7 +318,9 @@
                 const fetchPromises = Array.from(pairIds).map(async pairId => {
                     try {
                         const pair = await fetchPairInfo(pairId);
-                        const outputAddress = mode === 'contracts' ? pair.pairAddress : pair.baseToken?.address || pair.pairAddress;
+                        const pairAddress = pair.pairAddress;
+                        const tokenAddress = pair.baseToken?.address || pairAddress;
+                        const outputAddress = mode === 'contracts' ? pairAddress : tokenAddress;
                         const ticker = mode === 'contracts' ? '' : pair.baseToken?.symbol || '';
                         const name = mode === 'contracts' ? '' : pair.baseToken?.name || '';
                         const existing = pairs.get(outputAddress);
@@ -255,10 +328,11 @@
                             pairs.set(outputAddress, {
                                 ticker: existing.ticker || ticker,
                                 name: existing.name || name,
-                                pairAddress: existing.pairAddress || pair.pairAddress
+                                pairAddress: existing.pairAddress || pairAddress,
+                                tokenAddress: existing.tokenAddress || tokenAddress
                             });
                         } else {
-                            pairs.set(outputAddress, { ticker, name, pairAddress: pair.pairAddress });
+                            pairs.set(outputAddress, { ticker, name, pairAddress, tokenAddress });
                         }
                     } catch (e) {
                         console.warn('Failed to fetch pair', pairId, e);
@@ -280,10 +354,12 @@
                     if (existing) {
                         pairs.set(address, {
                             ticker: existing.ticker || ticker,
-                            name: existing.name || name
+                            name: existing.name || name,
+                            pairAddress: existing.pairAddress || address,
+                            tokenAddress: existing.tokenAddress || address
                         });
                     } else {
-                        pairs.set(address, { ticker, name });
+                        pairs.set(address, { ticker, name, pairAddress: address, tokenAddress: address });
                     }
                 });
             }
@@ -301,50 +377,50 @@
     }
 
     async function copySingleAddress(pairId) {
-        try {
-            const pair = await fetchPairInfo(pairId);
-            const address = pair.baseToken?.address || pair.pairAddress;
-            await writeClipboard(address);
+        await withPair(pairId, async pair => {
+            await writeClipboard(getPrimaryAddress(pair));
             showToast('Copied token contract address');
-        } catch (e) {
-            console.warn('copySingleAddress failed', e);
-            alert('Unable to copy contract address automatically.');
-        }
+        }, 'Unable to copy contract address automatically.');
     }
 
-    async function openGmgn(pairId) {
-        try {
-            const pair = await fetchPairInfo(pairId);
-            const address = pair.baseToken?.address || pair.pairAddress;
-            window.open('https://gmgn.ai/sol/token/' + encodeURIComponent(address), '_blank');
-        } catch (e) {
-            console.warn('openGmgn failed', e);
-            alert('Unable to open GMGN for this contract.');
-        }
+    function openGmgn(pairId) {
+        return openPairLink(pairId, pair => 'https://gmgn.ai/sol/token/' + encodeURIComponent(getPrimaryAddress(pair)), 'Unable to open GMGN for this contract.');
     }
 
-    async function openTwitterCa(pairId) {
-        try {
-            const pair = await fetchPairInfo(pairId);
-            const address = pair.baseToken?.address || pair.pairAddress;
-            window.open('https://twitter.com/search?q=' + encodeURIComponent(address), '_blank');
-        } catch (e) {
-            console.warn('openTwitterCa failed', e);
-            alert('Unable to open Twitter search for this contract.');
-        }
+    function openTwitterCa(pairId) {
+        return openPairLink(pairId, pair => 'https://twitter.com/search?q=' + encodeURIComponent(getPrimaryAddress(pair)), 'Unable to open Twitter search for this contract.');
     }
 
-    async function openTwitterTicker(pairId) {
-        try {
-            const pair = await fetchPairInfo(pairId);
+    function openTwitterTicker(pairId) {
+        return openPairLink(pairId, pair => {
             const symbol = pair.baseToken?.symbol || '';
             if (!symbol) throw new Error('Ticker missing');
             const query = '$' + symbol.replace(/^[^A-Za-z0-9]+/, '');
-            window.open('https://twitter.com/search?q=' + encodeURIComponent(query), '_blank');
-        } catch (e) {
-            console.warn('openTwitterTicker failed', e);
-            alert('Unable to open Twitter search for this ticker.');
-        }
+            return 'https://twitter.com/search?q=' + encodeURIComponent(query);
+        }, 'Unable to open Twitter search for this ticker.');
+    }
+
+    function openBubble(pairId, newTab = false) {
+        return openPairLink(pairId, pair => 'https://v2.bubblemaps.io/map?address=' + encodeURIComponent(getPrimaryAddress(pair)) + '&chain=solana&limit=80', 'Unable to open Bubble for this contract.', {
+            newTab,
+            overlayTitle: newTab ? null : 'BubbleMaps'
+        });
+    }
+
+    function openPumpFun(pairId) {
+        return openPairLink(pairId, pair => 'https://pump.fun/coin/' + encodeURIComponent(getPrimaryAddress(pair)), 'Unable to open pump.fun for this contract.');
+    }
+
+    function openSolscan(pairId) {
+        return openPairLink(pairId, pair => 'https://solscan.io/token/' + encodeURIComponent(getPrimaryAddress(pair)), 'Unable to open Solscan for this contract.');
+    }
+
+    function openDexTools(pairId) {
+        return openPairLink(pairId, pair => 'https://www.dextools.io/app/solana/pair-explorer/' + encodeURIComponent(getPairAddress(pair)), 'Unable to open DexTools for this contract.');
+    }
+
+    function openTelegram(pairId) {
+        return openPairLink(pairId, pair => 'https://t.me/rick?start=' + encodeURIComponent(getPrimaryAddress(pair)), 'Unable to open Telegram for this contract.');
     }
 
     function showIframeOverlay(title, url) {
@@ -458,14 +534,14 @@
             textarea.textContent = buildResult(pairs, newMode);
         };
         document.getElementById('dex-copy-contracts').addEventListener('click', () => {
-            const value = buildResult(pairs);
+            const value = buildResult(pairs, 'contracts');
             writeClipboard(value).then(() => {
                 showToast('Copied ' + pairs.size + ' pair CAs to clipboard');
             });
             updateTextarea('contracts');
         });
         document.getElementById('dex-copy-tokens').addEventListener('click', () => {
-            const value = buildResult(pairs);
+            const value = buildResult(pairs, 'tokens');
             writeClipboard(value).then(() => {
                 showToast('Copied ' + pairs.size + ' token CAs to clipboard');
             });
@@ -565,6 +641,18 @@
         return event.button === 1 || event.ctrlKey || event.metaKey || event.shiftKey;
     }
 
+    const dexButtonStyles = 'padding:2px 8px;border:none;border-radius:6px;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
+
+    function createDexButton(label, actionKey, background, color = '#fff') {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = label;
+        btn.style.cssText = `${dexButtonStyles}background:${background};color:${color};`;
+        btn.dataset.dexActionKey = actionKey;
+        btn.dataset.dexActionButton = '1';
+        return btn;
+    }
+
     function insertCopyButton(anchor) {
         const row = getRowFromAnchor(anchor);
         if (!row) return;
@@ -586,69 +674,24 @@
         wrapper.style.alignItems = 'center';
         wrapper.style.marginLeft = '6px';
 
-        const copyButton = document.createElement('button');
-        copyButton.type = 'button';
-        copyButton.textContent = 'CA';
-        copyButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(38,166,154,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
+        const buttonSpecs = [
+            { label: 'CA', key: 'ca', background: 'rgba(38,166,154,0.95)' },
+            { label: 'GMGN', key: 'gmgn', background: 'rgba(66,133,244,0.95)' },
+            { label: 'X CA', key: 'xca', background: 'rgba(255,99,71,0.95)' },
+            { label: 'X $', key: 'xticker', background: 'rgba(155,89,182,0.95)' },
+            { label: '\u{1FAE7}', key: 'bubble', background: 'rgba(0,150,136,0.95)' },
+            { label: '\u{1F680}', key: 'pumpfun', background: 'rgba(255,161,0,0.95)', color: '#111' },
+            { label: 'SC', key: 'solscan', background: 'rgba(0,122,255,0.95)' },
+            { label: 'DT', key: 'dextools', background: 'rgba(123,0,255,0.95)' },
+            { label: 'TG', key: 'telegram', background: 'rgba(0,136,204,0.95)' }
+        ];
 
-        const gmgnButton = document.createElement('button');
-        gmgnButton.type = 'button';
-        gmgnButton.textContent = 'GMGN';
-        gmgnButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(66,133,244,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-
-        const xcaButton = document.createElement('button');
-        xcaButton.type = 'button';
-        xcaButton.textContent = 'X CA';
-        xcaButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(255,99,71,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-
-        const xtickerButton = document.createElement('button');
-        xtickerButton.type = 'button';
-        xtickerButton.textContent = 'X $';
-        xtickerButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(155,89,182,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-
-        const bubbleButton = document.createElement('button');
-        bubbleButton.type = 'button';
-        bubbleButton.textContent = '\u{1FAE7}';
-        bubbleButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,150,136,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-
-        const pumpFunButton = document.createElement('button');
-        pumpFunButton.type = 'button';
-        pumpFunButton.textContent = '\u{1F680}';
-        pumpFunButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(255,161,0,0.95);color:#111;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-
-        const solscanButton = document.createElement('button');
-        solscanButton.type = 'button';
-        solscanButton.textContent = 'SC';
-        solscanButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,122,255,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-
-        const dexToolsButton = document.createElement('button');
-        dexToolsButton.type = 'button';
-        dexToolsButton.textContent = 'DT';
-        dexToolsButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(123,0,255,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-
-        const telegramButton = document.createElement('button');
-        telegramButton.type = 'button';
-        telegramButton.textContent = 'TG';
-        telegramButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,136,204,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-
-        copyButton.dataset.dexActionKey = 'ca';
-        bubbleButton.dataset.dexActionKey = 'bubble';
-        pumpFunButton.dataset.dexActionKey = 'pumpfun';
-        solscanButton.dataset.dexActionKey = 'solscan';
-        gmgnButton.dataset.dexActionKey = 'gmgn';
-        dexToolsButton.dataset.dexActionKey = 'dextools';
-        xcaButton.dataset.dexActionKey = 'xca';
-        xtickerButton.dataset.dexActionKey = 'xticker';
-        telegramButton.dataset.dexActionKey = 'telegram';
-        [copyButton, bubbleButton, pumpFunButton, solscanButton, gmgnButton, dexToolsButton, xcaButton, xtickerButton, telegramButton].forEach(btn => {
-            btn.dataset.dexActionButton = '1';
-        });
-        wrapper.append(copyButton, bubbleButton, pumpFunButton, solscanButton, gmgnButton, dexToolsButton, xcaButton, xtickerButton, telegramButton);
+        buttonSpecs.forEach(spec => wrapper.appendChild(createDexButton(spec.label, spec.key, spec.background, spec.color)));
         anchor.insertAdjacentElement('afterend', wrapper);
         return null;
     }
 
-    const debouncedScanDexscreenerLinks = debounce(scanDexscreenerLinks, 100);
+    const debouncedScanDexscreenerLinks = debounce(scanDexscreenerLinks, 500);
 
     function scanDexscreenerLinks() {
         cleanupCopyWrappers();
@@ -667,17 +710,16 @@
         loadPairInfoCache();
         document.body.addEventListener('click', handleDexActionEvent);
         document.body.addEventListener('auxclick', handleDexActionEvent);
-        insertHeaderQuickLinks();
-        scanDexscreenerLinks();
-        const observer = new MutationObserver(() => {
+        setTimeout(() => {
+            insertHeaderQuickLinks();
+            debouncedScanDexscreenerLinks();
+        }, initialScanDelay);
+        const observer = new MutationObserver(records => {
+            if (records.every(isSelfMutation)) return;
             insertHeaderQuickLinks();
             debouncedScanDexscreenerLinks();
         });
-        observer.observe(document.body, { childList: true, subtree: true, attributes: true });
-        setInterval(() => {
-            insertHeaderQuickLinks();
-            scanDexscreenerLinks();
-        }, 2500);
+        observer.observe(document.body, { childList: true, subtree: true });
     }
 
     if (location.hostname.includes('dexscreener')) {
