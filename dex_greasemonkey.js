@@ -511,7 +511,7 @@
 
         const bubbleButton = document.createElement('button');
         bubbleButton.type = 'button';
-        bubbleButton.textContent = 'ðŸ«§';
+        bubbleButton.textContent = '\u{1FAE7}';
         bubbleButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,150,136,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
         bubbleButton.addEventListener('click', event => {
             event.stopPropagation();
@@ -521,7 +521,7 @@
 
         const pumpFunButton = document.createElement('button');
         pumpFunButton.type = 'button';
-        pumpFunButton.textContent = 'ðŸ’Š';
+        pumpFunButton.textContent = '\u{1F680}';
         pumpFunButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(255,161,0,0.95);color:#111;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
         pumpFunButton.addEventListener('click', event => {
             event.stopPropagation();
