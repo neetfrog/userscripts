@@ -451,7 +451,7 @@
         headerTitle.textContent = title;
         const closeButton = document.createElement('button');
         closeButton.type = 'button';
-        closeButton.textContent = 'âœ•';
+        closeButton.textContent = '✕';
         closeButton.style.cssText = 'padding:6px 10px;border:none;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;cursor:pointer;font-size:13px;';
         closeButton.addEventListener('click', () => overlay.remove());
         header.append(headerTitle, closeButton);
@@ -462,22 +462,6 @@
         frameWrapper.append(header, iframe);
         overlay.appendChild(frameWrapper);
         document.body.appendChild(overlay);
-    }
-
-    async function openBubble(pairId, newTab = false) {
-        try {
-            const pair = await fetchPairInfo(pairId);
-            const address = pair.baseToken?.address || pair.pairAddress;
-            const url = 'https://v2.bubblemaps.io/map?address=' + encodeURIComponent(address) + '&chain=solana&limit=80';
-            if (newTab) {
-                window.open(url, '_blank');
-            } else {
-                showIframeOverlay('BubbleMaps', url);
-            }
-        } catch (e) {
-            console.warn('openBubble failed', e);
-            alert('Unable to open Bubble for this contract.');
-        }
     }
 
     async function openInsightBubble(pairId, newTab = false) {
@@ -493,50 +477,6 @@
         } catch (e) {
             console.warn('openInsightBubble failed', e);
             alert('Unable to open InsightX BubbleMaps for this contract.');
-        }
-    }
-
-    async function openPumpFun(pairId) {
-        try {
-            const pair = await fetchPairInfo(pairId);
-            const address = pair.baseToken?.address || pair.pairAddress;
-            window.open('https://pump.fun/coin/' + encodeURIComponent(address), '_blank');
-        } catch (e) {
-            console.warn('openPumpFun failed', e);
-            alert('Unable to open pump.fun for this contract.');
-        }
-    }
-
-    async function openSolscan(pairId) {
-        try {
-            const pair = await fetchPairInfo(pairId);
-            const address = pair.baseToken?.address || pair.pairAddress;
-            window.open('https://solscan.io/token/' + encodeURIComponent(address), '_blank');
-        } catch (e) {
-            console.warn('openSolscan failed', e);
-            alert('Unable to open Solscan for this contract.');
-        }
-    }
-
-    async function openDexTools(pairId) {
-        try {
-            const pair = await fetchPairInfo(pairId);
-            const address = pair.pairAddress || pair.baseToken?.address;
-            window.open('https://www.dextools.io/app/solana/pair-explorer/' + encodeURIComponent(address), '_blank');
-        } catch (e) {
-            console.warn('openDexTools failed', e);
-            alert('Unable to open DexTools for this contract.');
-        }
-    }
-
-    async function openTelegram(pairId) {
-        try {
-            const pair = await fetchPairInfo(pairId);
-            const address = pair.baseToken?.address || pair.pairAddress;
-            window.open('https://t.me/rick?start=' + encodeURIComponent(address), '_blank');
-        } catch (e) {
-            console.warn('openTelegram failed', e);
-            alert('Unable to open Telegram for this contract.');
         }
     }
 
