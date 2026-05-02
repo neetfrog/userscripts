@@ -238,58 +238,10 @@
         }
     }
 
-    const holderCountCache = new Map();
-
     function cachePairInfo(pairId, data) {
         if (!pairId || !data) return;
         pairInfoCache.set(pairId, { timestamp: Date.now(), data });
         savePairInfoCache();
-    }
-
-    async function fetchSolscanHolderCount(address) {
-        const normalized = normalizeSolanaAddress(address);
-        if (!normalized) return null;
-        if (holderCountCache.has(normalized)) return holderCountCache.get(normalized);
-        const url = 'https://public-api.solscan.io/token/meta?tokenAddress=' + encodeURIComponent(normalized);
-        try {
-            const response = await fetch(url);
-            if (!response.ok) {
-                throw new Error('Solscan token meta failed: ' + response.status);
-            }
-            const json = await response.json();
-            const count = normalizeStoredNumber(json?.holderCount ?? json?.holders ?? json?.holder_count ?? json?.holdersCount);
-            if (count == null) {
-                throw new Error('Holder count missing');
-            }
-            holderCountCache.set(normalized, count);
-            return count;
-        } catch (e) {
-            console.warn('Failed to fetch Solscan holder count for', normalized, e);
-            return null;
-        }
-    }
-
-    async function updateHolderBadge(pairId, badgeElement) {
-        const pair = await fetchPairInfo(pairId);
-        const address = getPrimaryAddress(pair) || getPairAddress(pair);
-        if (!address) {
-            badgeElement.textContent = 'H?';
-            badgeElement.title = 'Unable to determine token address';
-            return;
-        }
-        const count = await fetchSolscanHolderCount(address);
-        if (count == null) {
-            badgeElement.textContent = 'H—';
-            badgeElement.title = 'Solscan holder count unavailable';
-            return;
-        }
-        badgeElement.textContent = 'H ' + formatNumber(count);
-        badgeElement.title = 'Solscan holder count';
-    }
-
-    function formatNumber(value) {
-        if (typeof value !== 'number' || Number.isNaN(value)) return String(value);
-        return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     }
 
     function scheduleIdle(fn) {
@@ -767,13 +719,6 @@
         ];
 
         buttonSpecs.forEach(spec => wrapper.appendChild(createDexButton(spec.label, spec.key, spec.background, spec.color)));
-
-        const holderBadge = document.createElement('span');
-        holderBadge.dataset.dexHolderBadge = '1';
-        holderBadge.textContent = 'H…';
-        holderBadge.style.cssText = 'font-size:11px;padding:2px 6px;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;white-space:nowrap;';
-        wrapper.appendChild(holderBadge);
-        updateHolderBadge(pairId, holderBadge);
 
         anchor.insertAdjacentElement('afterend', wrapper);
         return null;
