@@ -1,11 +1,12 @@
 ﻿// ==UserScript==
-// @name         Dex Pair Clipboard
+// @name         Dex Pair Clipboard & Tool Links
 // @namespace    http://example.com/
-// @version      1.0
-// @description  Copy Solana DEX pair addresses from links on any page
+// @version      1.1
+// @description  Copy Solana DEX pair/token addresses and open BubbleMaps, pump.fun, Solscan, DexTools, Telegram and Twitter links for Dexscreener rows.
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
+// @run-at       document-idle
 // ==/UserScript==
 
 (function() {
@@ -351,12 +352,16 @@
         document.body.appendChild(overlay);
     }
 
-    async function openBubble(pairId) {
+    async function openBubble(pairId, newTab = false) {
         try {
             const pair = await fetchPairInfo(pairId);
             const address = pair.baseToken?.address || pair.pairAddress;
             const url = 'https://v2.bubblemaps.io/map?address=' + encodeURIComponent(address) + '&chain=solana&limit=80';
-            showIframeOverlay('BubbleMaps', url);
+            if (newTab) {
+                window.open(url, '_blank');
+            } else {
+                showIframeOverlay('BubbleMaps', url);
+            }
         } catch (e) {
             console.warn('openBubble failed', e);
             alert('Unable to open Bubble for this contract.');
@@ -399,12 +404,11 @@
     async function openTelegram(pairId) {
         try {
             const pair = await fetchPairInfo(pairId);
-            const symbol = pair.baseToken?.symbol || pair.pairAddress || pair.pairAddress;
-            const query = symbol ? '$' + symbol.replace(/^[^A-Za-z0-9]+/, '') : pair.pairAddress;
-            window.open('https://t.me/search?q=' + encodeURIComponent(query), '_blank');
+            const address = pair.baseToken?.address || pair.pairAddress;
+            window.open('https://t.me/soul_scanner_bot?start=' + encodeURIComponent(address), '_blank');
         } catch (e) {
             console.warn('openTelegram failed', e);
-            alert('Unable to open Telegram search for this contract.');
+            alert('Unable to open Telegram for this contract.');
         }
     }
 
@@ -448,6 +452,25 @@
         document.getElementById('dex-pair-clipboard-close').addEventListener('click', () => overlay.remove());
     }
 
+    function attachActionButton(button, callback) {
+        button.addEventListener('click', event => {
+            event.stopPropagation();
+            event.preventDefault();
+            callback(event);
+        });
+        button.addEventListener('auxclick', event => {
+            if (event.button === 1) {
+                event.stopPropagation();
+                event.preventDefault();
+                callback(event);
+            }
+        });
+    }
+
+    function isNewTabClick(event) {
+        return event.button === 1 || event.ctrlKey || event.metaKey || event.shiftKey;
+    }
+
     function insertCopyButton(anchor) {
         const row = getRowFromAnchor(anchor);
         if (!row) return;
@@ -483,95 +506,63 @@
         gmgnButton.type = 'button';
         gmgnButton.textContent = 'GMGN';
         gmgnButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(66,133,244,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        gmgnButton.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            openGmgn(pairId);
-        });
+        attachActionButton(gmgnButton, () => openGmgn(pairId));
 
         const xcaButton = document.createElement('button');
         xcaButton.type = 'button';
         xcaButton.textContent = 'X CA';
         xcaButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(255,99,71,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        xcaButton.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            openTwitterCa(pairId);
-        });
+        attachActionButton(xcaButton, () => openTwitterCa(pairId));
 
         const xtickerButton = document.createElement('button');
         xtickerButton.type = 'button';
         xtickerButton.textContent = 'X $';
         xtickerButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(155,89,182,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        xtickerButton.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            openTwitterTicker(pairId);
-        });
+        attachActionButton(xtickerButton, () => openTwitterTicker(pairId));
 
         const bubbleButton = document.createElement('button');
         bubbleButton.type = 'button';
         bubbleButton.textContent = '\u{1FAE7}';
         bubbleButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,150,136,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        bubbleButton.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            openBubble(pairId);
-        });
+        attachActionButton(bubbleButton, event => openBubble(pairId, isNewTabClick(event)));
 
         const pumpFunButton = document.createElement('button');
         pumpFunButton.type = 'button';
         pumpFunButton.textContent = '\u{1F680}';
         pumpFunButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(255,161,0,0.95);color:#111;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        pumpFunButton.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            openPumpFun(pairId);
-        });
+        attachActionButton(pumpFunButton, () => openPumpFun(pairId));
 
         const solscanButton = document.createElement('button');
         solscanButton.type = 'button';
         solscanButton.textContent = 'SC';
         solscanButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,122,255,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        solscanButton.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            openSolscan(pairId);
-        });
+        attachActionButton(solscanButton, () => openSolscan(pairId));
 
         const dexToolsButton = document.createElement('button');
         dexToolsButton.type = 'button';
         dexToolsButton.textContent = 'DT';
         dexToolsButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(123,0,255,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        dexToolsButton.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            openDexTools(pairId);
-        });
+        attachActionButton(dexToolsButton, () => openDexTools(pairId));
 
         const telegramButton = document.createElement('button');
         telegramButton.type = 'button';
         telegramButton.textContent = 'TG';
         telegramButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,136,204,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        telegramButton.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            openTelegram(pairId);
-        });
+        attachActionButton(telegramButton, () => openTelegram(pairId));
 
         copyButton.dataset.dexActionKey = 'ca';
-        gmgnButton.dataset.dexActionKey = 'gmgn';
-        xcaButton.dataset.dexActionKey = 'xca';
-        xtickerButton.dataset.dexActionKey = 'xticker';
         bubbleButton.dataset.dexActionKey = 'bubble';
         pumpFunButton.dataset.dexActionKey = 'pumpfun';
         solscanButton.dataset.dexActionKey = 'solscan';
+        gmgnButton.dataset.dexActionKey = 'gmgn';
         dexToolsButton.dataset.dexActionKey = 'dextools';
+        xcaButton.dataset.dexActionKey = 'xca';
+        xtickerButton.dataset.dexActionKey = 'xticker';
         telegramButton.dataset.dexActionKey = 'telegram';
-        [copyButton, gmgnButton, xcaButton, xtickerButton, bubbleButton, pumpFunButton, solscanButton, dexToolsButton, telegramButton].forEach(btn => {
+        [copyButton, bubbleButton, pumpFunButton, solscanButton, gmgnButton, dexToolsButton, xcaButton, xtickerButton, telegramButton].forEach(btn => {
             btn.dataset.dexActionButton = '1';
         });
-        wrapper.append(copyButton, gmgnButton, xcaButton, xtickerButton, bubbleButton, pumpFunButton, solscanButton, dexToolsButton, telegramButton);
+        wrapper.append(copyButton, bubbleButton, pumpFunButton, solscanButton, gmgnButton, dexToolsButton, xcaButton, xtickerButton, telegramButton);
         anchor.insertAdjacentElement('afterend', wrapper);
         return null;
     }
