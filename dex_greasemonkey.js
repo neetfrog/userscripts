@@ -1,8 +1,8 @@
 ﻿// ==UserScript==
 // @name         Dex Pair Clipboard & Tool Links
 // @namespace    http://example.com/
-// @version      1.1
-// @description  Copy Solana DEX pair/token addresses and open BubbleMaps, pump.fun, Solscan, DexTools, Telegram and Twitter links for Dexscreener rows.
+// @version      1.2
+// @description  Copy Solana DEX pair/token addresses and open BubbleMaps, pump.fun, Solscan, DexTools, Telegram, Twitter links, and header quick-links for Dexscreener rows.
 // @match        *://*/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
@@ -500,6 +500,67 @@
         handler(pairId, event);
     }
 
+    function createHeaderLinkButton(label, url) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = label;
+        btn.style.cssText = 'padding:6px 10px;border:none;border-radius:8px;background:rgba(42,118,255,0.95);color:#fff;font-size:12px;cursor:pointer;line-height:1;white-space:nowrap;';
+        btn.addEventListener('click', event => {
+            event.preventDefault();
+            window.location.href = url;
+        });
+        return btn;
+    }
+
+    function getDexScreenerHeaderRoot() {
+        const tokenElements = Array.from(document.querySelectorAll('th, div, span'))
+            .filter(el => el.textContent && el.textContent.trim().toUpperCase() === 'TOKEN');
+        for (const el of tokenElements) {
+            const row = el.closest('tr');
+            if (row) return row;
+            const parent = el.closest('.table-header, .header, .row, .pair-list, .ds-dex-table');
+            if (parent) return parent;
+        }
+
+        const thead = document.querySelector('thead');
+        if (thead) return thead;
+
+        const fallbackSelectors = [
+            '.ds-dex-table',
+            '.pair-list',
+            '.scroller',
+            'main',
+            'body'
+        ];
+        for (const selector of fallbackSelectors) {
+            const root = document.querySelector(selector);
+            if (root) return root;
+        }
+        return document.body;
+    }
+
+    function insertHeaderQuickLinks() {
+        if (document.getElementById('dex-header-quick-links')) return;
+        const root = getDexScreenerHeaderRoot();
+        if (!root) return;
+
+        const container = document.createElement('div');
+        container.id = 'dex-header-quick-links';
+        container.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;margin-bottom:8px;';
+
+        container.append(
+            createHeaderLinkButton('1w <120k dip', 'https://dexscreener.com/new-pairs/solana?rankBy=pairAge&order=asc&dexIds=pumpswap&minLiq=7000&minMarketCap=17000&maxMarketCap=120000&minAge=1&maxAge=168&min6HVol=2000&min1HVol=500&max24HChg=-1&max6HChg=-1&max1HChg=-1&profile=1'),
+            createHeaderLinkButton('20-120k <7d', 'https://dexscreener.com/new-pairs/solana?rankBy=pairAge&order=asc&dexIds=pumpswap,pumpfun&minLiq=5000&minMarketCap=20000&maxMarketCap=120000&minAge=1&maxAge=168&min6HVol=3333&min1HVol=333&profile=1&launchpads=1')
+        );
+
+        const firstChild = root.firstElementChild;
+        if (firstChild) {
+            root.insertBefore(container, firstChild);
+        } else {
+            root.appendChild(container);
+        }
+    }
+
     function isNewTabClick(event) {
         return event.button === 1 || event.ctrlKey || event.metaKey || event.shiftKey;
     }
@@ -606,10 +667,17 @@
         loadPairInfoCache();
         document.body.addEventListener('click', handleDexActionEvent);
         document.body.addEventListener('auxclick', handleDexActionEvent);
+        insertHeaderQuickLinks();
         scanDexscreenerLinks();
-        const observer = new MutationObserver(debouncedScanDexscreenerLinks);
+        const observer = new MutationObserver(() => {
+            insertHeaderQuickLinks();
+            debouncedScanDexscreenerLinks();
+        });
         observer.observe(document.body, { childList: true, subtree: true, attributes: true });
-        setInterval(scanDexscreenerLinks, 2500);
+        setInterval(() => {
+            insertHeaderQuickLinks();
+            scanDexscreenerLinks();
+        }, 2500);
     }
 
     if (location.hostname.includes('dexscreener')) {
