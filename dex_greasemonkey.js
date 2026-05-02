@@ -123,14 +123,34 @@
         }
     }
 
-    function getCachedPairInfo(pairId) {
+    function isPairInfoExpired(entry) {
+        return !entry || Date.now() - entry.timestamp > pairInfoCacheTTL;
+    }
+
+    function getCachedPairInfo(pairId, allowStale = false) {
         const entry = pairInfoCache.get(pairId);
         if (!entry) return null;
-        if (Date.now() - entry.timestamp > pairInfoCacheTTL) {
+        if (isPairInfoExpired(entry)) {
+            if (allowStale) return entry.data;
             pairInfoCache.delete(pairId);
             return null;
         }
         return entry.data;
+    }
+
+    function invalidatePairInfo(pairId) {
+        if (!pairId) return;
+        pairInfoCache.delete(pairId);
+        try {
+            const raw = localStorage.getItem(pairInfoCacheKey);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object') return;
+            delete parsed[pairId];
+            localStorage.setItem(pairInfoCacheKey, JSON.stringify(parsed));
+        } catch (e) {
+            console.warn('Failed to invalidate pair info cache for', pairId, e);
+        }
     }
 
     function cachePairInfo(pairId, data) {
@@ -177,23 +197,25 @@
 
     async function fetchPairInfo(pairId) {
         const cached = getCachedPairInfo(pairId);
+        const stale = getCachedPairInfo(pairId, true);
+        if (cached) return cached;
         const url = 'https://api.dexscreener.com/latest/dex/pairs/solana/' + pairId;
         try {
             const response = await fetch(url);
             if (!response.ok) {
-                if (cached) return cached;
+                if (stale) return stale;
                 throw new Error('Dexscreener API failed: ' + response.status);
             }
             const json = await response.json();
             const pair = Array.isArray(json.pairs) ? json.pairs[0] : json.pair || null;
             if (!pair) {
-                if (cached) return cached;
+                if (stale) return stale;
                 throw new Error('Pair data missing for ' + pairId);
             }
             cachePairInfo(pairId, pair);
             return pair;
         } catch (e) {
-            if (cached) return cached;
+            if (stale) return stale;
             throw e;
         }
     }
@@ -405,7 +427,7 @@
         try {
             const pair = await fetchPairInfo(pairId);
             const address = pair.baseToken?.address || pair.pairAddress;
-            window.open('https://t.me/soul_scanner_bot?start=' + encodeURIComponent(address), '_blank');
+            window.open('https://t.me/rick?start=' + encodeURIComponent(address), '_blank');
         } catch (e) {
             console.warn('openTelegram failed', e);
             alert('Unable to open Telegram for this contract.');
@@ -452,19 +474,30 @@
         document.getElementById('dex-pair-clipboard-close').addEventListener('click', () => overlay.remove());
     }
 
-    function attachActionButton(button, callback) {
-        button.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            callback(event);
-        });
-        button.addEventListener('auxclick', event => {
-            if (event.button === 1) {
-                event.stopPropagation();
-                event.preventDefault();
-                callback(event);
-            }
-        });
+    const dexActionHandlerMap = {
+        ca: pairId => copySingleAddress(pairId),
+        gmgn: pairId => openGmgn(pairId),
+        xca: pairId => openTwitterCa(pairId),
+        xticker: pairId => openTwitterTicker(pairId),
+        bubble: (pairId, event) => openBubble(pairId, isNewTabClick(event)),
+        pumpfun: pairId => openPumpFun(pairId),
+        solscan: pairId => openSolscan(pairId),
+        dextools: pairId => openDexTools(pairId),
+        telegram: pairId => openTelegram(pairId)
+    };
+
+    function handleDexActionEvent(event) {
+        const button = event.target.closest('button[data-dex-action-button="1"]');
+        if (!button) return;
+        const wrapper = button.closest('span[data-dex-copy-wrapper="1"]');
+        const pairId = wrapper?.dataset?.pairId;
+        const actionKey = button.dataset?.dexActionKey;
+        if (!pairId || !actionKey) return;
+        event.stopPropagation();
+        event.preventDefault();
+        const handler = dexActionHandlerMap[actionKey];
+        if (!handler) return;
+        handler(pairId, event);
     }
 
     function isNewTabClick(event) {
@@ -496,59 +529,46 @@
         copyButton.type = 'button';
         copyButton.textContent = 'CA';
         copyButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(38,166,154,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        copyButton.addEventListener('click', event => {
-            event.stopPropagation();
-            event.preventDefault();
-            copySingleAddress(pairId);
-        });
 
         const gmgnButton = document.createElement('button');
         gmgnButton.type = 'button';
         gmgnButton.textContent = 'GMGN';
         gmgnButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(66,133,244,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        attachActionButton(gmgnButton, () => openGmgn(pairId));
 
         const xcaButton = document.createElement('button');
         xcaButton.type = 'button';
         xcaButton.textContent = 'X CA';
         xcaButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(255,99,71,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        attachActionButton(xcaButton, () => openTwitterCa(pairId));
 
         const xtickerButton = document.createElement('button');
         xtickerButton.type = 'button';
         xtickerButton.textContent = 'X $';
         xtickerButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(155,89,182,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        attachActionButton(xtickerButton, () => openTwitterTicker(pairId));
 
         const bubbleButton = document.createElement('button');
         bubbleButton.type = 'button';
         bubbleButton.textContent = '\u{1FAE7}';
         bubbleButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,150,136,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        attachActionButton(bubbleButton, event => openBubble(pairId, isNewTabClick(event)));
 
         const pumpFunButton = document.createElement('button');
         pumpFunButton.type = 'button';
         pumpFunButton.textContent = '\u{1F680}';
         pumpFunButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(255,161,0,0.95);color:#111;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        attachActionButton(pumpFunButton, () => openPumpFun(pairId));
 
         const solscanButton = document.createElement('button');
         solscanButton.type = 'button';
         solscanButton.textContent = 'SC';
         solscanButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,122,255,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        attachActionButton(solscanButton, () => openSolscan(pairId));
 
         const dexToolsButton = document.createElement('button');
         dexToolsButton.type = 'button';
         dexToolsButton.textContent = 'DT';
         dexToolsButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(123,0,255,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        attachActionButton(dexToolsButton, () => openDexTools(pairId));
 
         const telegramButton = document.createElement('button');
         telegramButton.type = 'button';
         telegramButton.textContent = 'TG';
         telegramButton.style.cssText = 'padding:2px 8px;border:none;border-radius:6px;background:rgba(0,136,204,0.95);color:#fff;font-size:11px;cursor:pointer;line-height:1;white-space:nowrap;';
-        attachActionButton(telegramButton, () => openTelegram(pairId));
 
         copyButton.dataset.dexActionKey = 'ca';
         bubbleButton.dataset.dexActionKey = 'bubble';
@@ -584,6 +604,8 @@
 
     function observeDexscreener() {
         loadPairInfoCache();
+        document.body.addEventListener('click', handleDexActionEvent);
+        document.body.addEventListener('auxclick', handleDexActionEvent);
         scanDexscreenerLinks();
         const observer = new MutationObserver(debouncedScanDexscreenerLinks);
         observer.observe(document.body, { childList: true, subtree: true, attributes: true });
