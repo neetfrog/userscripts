@@ -24,12 +24,26 @@
             .join("\n");
     }
 
+    const solanaAddressPattern = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+    function normalizeSolanaAddress(address) {
+        if (!address || typeof address !== 'string') return null;
+        const cleaned = address.trim();
+        if (solanaAddressPattern.test(cleaned)) return cleaned;
+        if (cleaned.length > 44) {
+            const candidate = cleaned.slice(0, 44);
+            if (solanaAddressPattern.test(candidate)) return candidate;
+        }
+        const match = cleaned.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/);
+        return match ? match[0] : null;
+    }
+
     function getPrimaryAddress(pair) {
-        return pair?.baseToken?.address || pair?.pairAddress || '';
+        return normalizeSolanaAddress(pair?.baseToken?.address || pair?.pairAddress || '');
     }
 
     function getPairAddress(pair) {
-        return pair?.pairAddress || pair?.baseToken?.address || '';
+        return normalizeSolanaAddress(pair?.pairAddress || pair?.baseToken?.address || '');
     }
 
     async function withPair(pairId, callback, failureMessage) {
@@ -224,10 +238,58 @@
         }
     }
 
+    const holderCountCache = new Map();
+
     function cachePairInfo(pairId, data) {
         if (!pairId || !data) return;
         pairInfoCache.set(pairId, { timestamp: Date.now(), data });
         savePairInfoCache();
+    }
+
+    async function fetchSolscanHolderCount(address) {
+        const normalized = normalizeSolanaAddress(address);
+        if (!normalized) return null;
+        if (holderCountCache.has(normalized)) return holderCountCache.get(normalized);
+        const url = 'https://public-api.solscan.io/token/meta?tokenAddress=' + encodeURIComponent(normalized);
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error('Solscan token meta failed: ' + response.status);
+            }
+            const json = await response.json();
+            const count = normalizeStoredNumber(json?.holderCount ?? json?.holders ?? json?.holder_count ?? json?.holdersCount);
+            if (count == null) {
+                throw new Error('Holder count missing');
+            }
+            holderCountCache.set(normalized, count);
+            return count;
+        } catch (e) {
+            console.warn('Failed to fetch Solscan holder count for', normalized, e);
+            return null;
+        }
+    }
+
+    async function updateHolderBadge(pairId, badgeElement) {
+        const pair = await fetchPairInfo(pairId);
+        const address = getPrimaryAddress(pair) || getPairAddress(pair);
+        if (!address) {
+            badgeElement.textContent = 'H?';
+            badgeElement.title = 'Unable to determine token address';
+            return;
+        }
+        const count = await fetchSolscanHolderCount(address);
+        if (count == null) {
+            badgeElement.textContent = 'H—';
+            badgeElement.title = 'Solscan holder count unavailable';
+            return;
+        }
+        badgeElement.textContent = 'H ' + formatNumber(count);
+        badgeElement.title = 'Solscan holder count';
+    }
+
+    function formatNumber(value) {
+        if (typeof value !== 'number' || Number.isNaN(value)) return String(value);
+        return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     }
 
     function scheduleIdle(fn) {
@@ -466,6 +528,22 @@
         }
     }
 
+    async function openInsightBubble(pairId, newTab = false) {
+        try {
+            const pair = await fetchPairInfo(pairId);
+            const address = pair.baseToken?.address || pair.pairAddress;
+            const url = 'https://app.insightx.network/bubblemaps/solana/' + encodeURIComponent(address);
+            if (newTab) {
+                window.open(url, '_blank');
+            } else {
+                window.location.href = url;
+            }
+        } catch (e) {
+            console.warn('openInsightBubble failed', e);
+            alert('Unable to open InsightX BubbleMaps for this contract.');
+        }
+    }
+
     async function openPumpFun(pairId) {
         try {
             const pair = await fetchPairInfo(pairId);
@@ -556,6 +634,7 @@
         xca: pairId => openTwitterCa(pairId),
         xticker: pairId => openTwitterTicker(pairId),
         bubble: (pairId, event) => openBubble(pairId, isNewTabClick(event)),
+        insightx: (pairId, event) => openInsightBubble(pairId, isNewTabClick(event)),
         pumpfun: pairId => openPumpFun(pairId),
         solscan: pairId => openSolscan(pairId),
         dextools: pairId => openDexTools(pairId),
@@ -680,6 +759,7 @@
             { label: 'X CA', key: 'xca', background: 'rgba(255,99,71,0.95)' },
             { label: 'X $', key: 'xticker', background: 'rgba(155,89,182,0.95)' },
             { label: '\u{1FAE7}', key: 'bubble', background: 'rgba(0,150,136,0.95)' },
+            { label: 'IX', key: 'insightx', background: 'rgba(95,150,255,0.95)' },
             { label: '\u{1F680}', key: 'pumpfun', background: 'rgba(255,161,0,0.95)', color: '#111' },
             { label: 'SC', key: 'solscan', background: 'rgba(0,122,255,0.95)' },
             { label: 'DT', key: 'dextools', background: 'rgba(123,0,255,0.95)' },
@@ -687,6 +767,14 @@
         ];
 
         buttonSpecs.forEach(spec => wrapper.appendChild(createDexButton(spec.label, spec.key, spec.background, spec.color)));
+
+        const holderBadge = document.createElement('span');
+        holderBadge.dataset.dexHolderBadge = '1';
+        holderBadge.textContent = 'H…';
+        holderBadge.style.cssText = 'font-size:11px;padding:2px 6px;border-radius:8px;background:rgba(255,255,255,0.08);color:#fff;white-space:nowrap;';
+        wrapper.appendChild(holderBadge);
+        updateHolderBadge(pairId, holderBadge);
+
         anchor.insertAdjacentElement('afterend', wrapper);
         return null;
     }
