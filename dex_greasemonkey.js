@@ -560,6 +560,11 @@
         return btn;
     }
 
+    function isDexScreenerDetailPage() {
+        const path = location.pathname || '';
+        return /^\/solana\/(?:token\/)?[A-Za-z0-9]{32,44}(?:\/|$)/.test(path);
+    }
+
     function getDexScreenerHeaderRoot() {
         const tokenElements = Array.from(document.querySelectorAll('th, div, span'))
             .filter(el => el.textContent && el.textContent.trim().toUpperCase() === 'TOKEN');
@@ -696,7 +701,7 @@
         observer.observe(document.body, { childList: true, subtree: true });
     }
 
-    if (location.hostname.includes('dexscreener')) {
+    if (location.hostname.includes('dexscreener') && !isDexScreenerDetailPage()) {
         observeDexscreener();
     }
 
