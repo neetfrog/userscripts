@@ -536,6 +536,7 @@
     function handleDexActionEvent(event) {
         const button = event.target.closest('button[data-dex-action-button="1"]');
         if (!button) return;
+        if (event.button === 2) return; // ignore right-clicks on action buttons
         const wrapper = button.closest('span[data-dex-copy-wrapper="1"]');
         const pairId = wrapper?.dataset?.pairId;
         const actionKey = button.dataset?.dexActionKey;
