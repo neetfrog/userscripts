@@ -560,9 +560,87 @@
         return btn;
     }
 
-    function isDexScreenerDetailPage() {
+    function getDexScreenerDetailPairId() {
         const path = location.pathname || '';
-        return /^\/solana\/(?:token\/)?[A-Za-z0-9]{32,44}(?:\/|$)/.test(path);
+        const match = path.match(/^\/solana\/(?:token\/)?([A-Za-z0-9]{32,44})(?:\/|$)/);
+        return match ? match[1] : null;
+    }
+
+    function isDexScreenerDetailPage() {
+        return Boolean(getDexScreenerDetailPairId());
+    }
+
+    function findDexScreenerDetailActionRoot() {
+        const selectors = [
+            '.pair-right-panel',
+            '.pair-info',
+            '.pair-details',
+            '.pair-header',
+            '.detail-page__header',
+            '.pair-page-header',
+            '.details-panel',
+            '.page-right',
+            '.right-panel',
+            'aside',
+            'main',
+            'body'
+        ];
+        for (const selector of selectors) {
+            const root = document.querySelector(selector);
+            if (root) return root;
+        }
+
+        const title = document.querySelector('h1, h2, .pair-name, .title');
+        if (title && title.parentElement) return title.parentElement;
+        return document.body;
+    }
+
+    function insertDetailActionButtons() {
+        const pairId = getDexScreenerDetailPairId();
+        if (!pairId || document.getElementById('dex-detail-action-buttons')) return;
+
+        const root = findDexScreenerDetailActionRoot();
+        if (!root) return;
+
+        const wrapper = document.createElement('span');
+        wrapper.id = 'dex-detail-action-buttons';
+        wrapper.dataset.dexCopyWrapper = '1';
+        wrapper.dataset.pairId = pairId;
+        wrapper.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:10px 0 14px; padding:4px 0;';
+
+        const buttonSpecs = [
+            { label: 'CA', key: 'ca', background: 'rgba(38,166,154,0.95)' },
+            { label: 'GMGN', key: 'gmgn', background: 'rgba(66,133,244,0.95)' },
+            { label: 'X CA', key: 'xca', background: 'rgba(255,99,71,0.95)' },
+            { label: 'X $', key: 'xticker', background: 'rgba(155,89,182,0.95)' },
+            { label: '\u{1FAE7}', key: 'bubble', background: 'rgba(0,150,136,0.95)' },
+            { label: 'IX', key: 'insightx', background: 'rgba(95,150,255,0.95)' },
+            { label: '\u{1F680}', key: 'pumpfun', background: 'rgba(255,161,0,0.95)', color: '#111' },
+            { label: 'SC', key: 'solscan', background: 'rgba(0,122,255,0.95)' },
+            { label: 'DT', key: 'dextools', background: 'rgba(123,0,255,0.95)' },
+            { label: 'TG', key: 'telegram', background: 'rgba(0,136,204,0.95)' }
+        ];
+
+        buttonSpecs.forEach(spec => wrapper.appendChild(createDexButton(spec.label, spec.key, spec.background, spec.color)));
+
+        const insertBefore = root.querySelector('h1, h2, .pair-name, .title, .pair-info, .detail-page__header, .pair-page-header, .pair-header');
+        if (insertBefore && insertBefore.parentElement === root) {
+            root.insertBefore(wrapper, insertBefore.nextSibling);
+        } else {
+            root.insertAdjacentElement('afterbegin', wrapper);
+        }
+    }
+
+    function observeDexscreenerDetail() {
+        loadPairInfoCache();
+        document.body.addEventListener('click', handleDexActionEvent);
+        document.body.addEventListener('auxclick', handleDexActionEvent);
+        setTimeout(() => insertDetailActionButtons(), initialScanDelay);
+        const observer = new MutationObserver(records => {
+            if (records.every(isSelfMutation)) return;
+            insertDetailActionButtons();
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
     }
 
     function getDexScreenerHeaderRoot() {
@@ -701,8 +779,12 @@
         observer.observe(document.body, { childList: true, subtree: true });
     }
 
-    if (location.hostname.includes('dexscreener') && !isDexScreenerDetailPage()) {
-        observeDexscreener();
+    if (location.hostname.includes('dexscreener')) {
+        if (isDexScreenerDetailPage()) {
+            observeDexscreenerDetail();
+        } else {
+            observeDexscreener();
+        }
     }
 
     if (typeof GM_registerMenuCommand === 'function') {
