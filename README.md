@@ -1,4 +1,4 @@
-# userscripts-2
+# userscripts
 
 A small repository of browser user scripts for Tampermonkey / Greasemonkey.
 
