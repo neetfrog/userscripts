@@ -163,6 +163,115 @@
     const initialScanDelay = 700;
     let copyPairsInProgress = false;
 
+    const openTabKeyPrefix = 'dex-screener-open-tab:';
+    const openTabHeartbeatMs = 5000;
+    const openTabStaleMs = 15 * 1000;
+    const currentTabId = 'dexscreener-tab-' + Math.random().toString(36).slice(2, 10);
+    let openPairIds = new Set();
+    let openTabHeartbeatTimer = null;
+
+    function extractOpenTabEntries() {
+        const now = Date.now();
+        const openIds = new Set();
+
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (!key || !key.startsWith(openTabKeyPrefix)) continue;
+
+            try {
+                const raw = localStorage.getItem(key);
+                if (!raw) {
+                    localStorage.removeItem(key);
+                    continue;
+                }
+                const entry = JSON.parse(raw);
+                if (!entry || typeof entry.pairId !== 'string' || typeof entry.ts !== 'number') {
+                    localStorage.removeItem(key);
+                    continue;
+                }
+                if (now - entry.ts > openTabStaleMs) {
+                    localStorage.removeItem(key);
+                    continue;
+                }
+                openIds.add(entry.pairId);
+            } catch (e) {
+                localStorage.removeItem(key);
+            }
+        }
+
+        return openIds;
+    }
+
+    function updateOpenTabEntry(pairId) {
+        const storageKey = openTabKeyPrefix + currentTabId;
+        if (!pairId) {
+            localStorage.removeItem(storageKey);
+            return;
+        }
+        try {
+            localStorage.setItem(storageKey, JSON.stringify({ pairId, ts: Date.now() }));
+        } catch (e) {
+            console.warn('Failed to update open tab storage', e);
+        }
+    }
+
+    function refreshOpenTabStyles() {
+        injectOpenTabStyles();
+        openPairIds = extractOpenTabEntries();
+        const anchors = document.querySelectorAll('a.ds-dex-table-row[href*="/solana/"]');
+        anchors.forEach(anchor => {
+            const pairId = getPairIdFromHref(anchor.href);
+            markAnchorAsOpenInOtherTab(anchor, pairId && openPairIds.has(pairId));
+        });
+    }
+
+    function injectOpenTabStyles() {
+        if (document.getElementById('dex-open-tab-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'dex-open-tab-styles';
+        style.textContent = '\n            .dex-open-tab-indicator { opacity: 0.55 !important; filter: grayscale(0.65) !important; }\n            .dex-open-tab-indicator [data-dex-copy-wrapper="1"], .dex-open-tab-indicator a { opacity: 0.8 !important; }\n        ';
+        document.head?.appendChild(style);
+    }
+
+    function markAnchorAsOpenInOtherTab(anchor, isOpen) {
+        const row = getRowFromAnchor(anchor);
+        if (!row) return;
+        const wrapper = getCopyWrapper(anchor);
+
+        if (isOpen) {
+            row.classList.add('dex-open-tab-indicator');
+            anchor.title = 'Already open in another tab';
+            if (wrapper) wrapper.classList.add('dex-open-tab-indicator');
+        } else {
+            row.classList.remove('dex-open-tab-indicator');
+            anchor.title = '';
+            if (wrapper) wrapper.classList.remove('dex-open-tab-indicator');
+        }
+    }
+
+    function startOpenTabHeartbeat(pairId) {
+        if (!pairId) return;
+        updateOpenTabEntry(pairId);
+        if (openTabHeartbeatTimer) clearInterval(openTabHeartbeatTimer);
+        openTabHeartbeatTimer = setInterval(() => updateOpenTabEntry(pairId), openTabHeartbeatMs);
+    }
+
+    function stopOpenTabHeartbeat() {
+        if (openTabHeartbeatTimer) {
+            clearInterval(openTabHeartbeatTimer);
+            openTabHeartbeatTimer = null;
+        }
+        updateOpenTabEntry(null);
+    }
+
+    function startOpenTabListener() {
+        refreshOpenTabStyles();
+        window.addEventListener('storage', event => {
+            if (!event.key || !event.key.startsWith(openTabKeyPrefix)) return;
+            refreshOpenTabStyles();
+        });
+    }
+
     function isSelfMutation(record) {
         if (record.target && record.target.closest && record.target.closest(injectedDomSelectors)) {
             return true;
@@ -633,12 +742,35 @@
 
     function observeDexscreenerDetail() {
         loadPairInfoCache();
+        const pairId = getDexScreenerDetailPairId();
+        if (pairId) {
+            startOpenTabHeartbeat(pairId);
+            window.addEventListener('beforeunload', stopOpenTabHeartbeat);
+            window.addEventListener('pagehide', stopOpenTabHeartbeat);
+        }
         document.body.addEventListener('click', handleDexActionEvent);
         document.body.addEventListener('auxclick', handleDexActionEvent);
         setTimeout(() => insertDetailActionButtons(), initialScanDelay);
         const observer = new MutationObserver(records => {
             if (records.every(isSelfMutation)) return;
             insertDetailActionButtons();
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    function observeDexscreener() {
+        loadPairInfoCache();
+        startOpenTabListener();
+        document.body.addEventListener('click', handleDexActionEvent);
+        document.body.addEventListener('auxclick', handleDexActionEvent);
+        setTimeout(() => {
+            insertHeaderQuickLinks();
+            debouncedScanDexscreenerLinks();
+        }, initialScanDelay);
+        const observer = new MutationObserver(records => {
+            if (records.every(isSelfMutation)) return;
+            insertHeaderQuickLinks();
+            debouncedScanDexscreenerLinks();
         });
         observer.observe(document.body, { childList: true, subtree: true });
     }
@@ -761,6 +893,7 @@
             insertCopyButton(anchor);
             anchor.dataset.dexEnhanced = '1';
         });
+        refreshOpenTabStyles();
     }
 
     function observeDexscreener() {
