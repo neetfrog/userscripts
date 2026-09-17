@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Dex Pair Clipboard & Tool Links
 // @namespace    http://example.com/
-// @version      1.9
-// @description  Copy Solana DEX pair/token addresses, open GMGN/pump.fun/Twitter/Telegram links, hide unwanted coins, and attach custom labels/notes to each coin.
+// @version      2.0
+// @description  Copy Solana DEX pair/token addresses, open GMGN/pump.fun/Twitter/Telegram links, hide unwanted coins, attach custom labels/notes, and export token data to a .txt file.
 // @match        *://dexscreener.com/*
 // @match        *://*.dexscreener.com/*
 // @match        *://gmgn.ai/*
@@ -2066,7 +2066,7 @@
     }
 
     // ================================================================
-    // Copy features
+    // Copy features & TXT Export
     // ================================================================
 
     let copyPairsInProgress =
@@ -2361,6 +2361,83 @@
             },
             'Unable to copy contract address automatically.'
         );
+    }
+
+    async function exportPairsToTxt() {
+        loadHiddenPairs();
+        loadLabels();
+
+        const anchors = [...document.querySelectorAll('a[href*="/solana/"]')];
+        const pairIds = new Set();
+
+        for (const anchor of anchors) {
+            const pairId = getPairIdFromHref(anchor.href);
+            if (pairId && !hiddenPairs.has(pairId)) {
+                pairIds.add(pairId);
+            }
+        }
+
+        if (pairIds.size === 0) {
+            showToast('No Solana pairs found to export');
+            return;
+        }
+
+        showToast(`Fetching details for ${pairIds.size} pairs...`);
+
+        let output = "DEXSCREENER TOKEN EXPORT\n";
+        output += "=".repeat(50) + "\n\n";
+
+        const outcomes = await mapWithConcurrency([...pairIds], 6, async pairId => {
+            try {
+                const pair = await fetchPairInfo(pairId);
+                if (!pair) return null;
+
+                const name = pair.baseToken?.name || 'Unknown';
+                const symbol = pair.baseToken?.symbol || 'UNKNOWN';
+                const mcap = pair.marketCap || pair.fdv || 'N/A';
+                const h6Chg = pair.priceChange?.h6 ?? 'N/A';
+                const h24Chg = pair.priceChange?.h24 ?? 'N/A';
+
+                const websites = pair.info?.websites?.map(w => w.url).join(', ') || '';
+                const twitter = pair.info?.socials?.find(s => s.type === 'twitter')?.url || '';
+                const websiteUrl = websites || 'N/A';
+                const twitterUrl = twitter || 'N/A';
+
+                let line = `Name: ${name} (${symbol})\n`;
+                line += `Contract: ${pair.baseToken?.address || pair.pairAddress}\n`;
+                line += `Market Cap: $${typeof mcap === 'number' ? mcap.toLocaleString() : mcap}\n`;
+                line += `6h Change: ${h6Chg}%\n`;
+                line += `24h Change: ${h24Chg}%\n`;
+                line += `Website: ${websiteUrl}\n`;
+                line += `Twitter: ${twitterUrl}\n`;
+                line += "-".repeat(40) + "\n";
+
+                return line;
+            } catch (e) {
+                return null;
+            }
+        });
+
+        const lines = outcomes.filter(o => o && o.ok).map(o => o.value);
+
+        if (lines.length === 0) {
+            showToast('Failed to retrieve token details for export.');
+            return;
+        }
+
+        output += lines.join('\n');
+
+        const blob = new Blob([output], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `dexscreener_export_${Date.now()}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        showToast(`Successfully exported ${lines.length} tokens to TXT!`);
     }
 
     // ================================================================
@@ -3194,16 +3271,6 @@
                 }
             }
 
-            // ========================================================
-            // IMPORTANT FIX:
-            //
-            // DexScreener virtualizes its rows. When a row leaves the
-            // viewport React can destroy that DOM element. When it
-            // comes back, it is a NEW element and therefore doesn't
-            // have the open-tab CSS class anymore.
-            //
-            // Reapply the current open-tab state after every list scan.
-            // ========================================================
             refreshOpenTabStyles();
 
         } finally {
@@ -3386,7 +3453,6 @@
                 debouncedScanDexscreenerLinks();
             };
 
-        // Initial scan.
         setTimeout(
             onActivity,
             SCAN_DELAY
@@ -3414,13 +3480,6 @@
                 pairId
             );
 
-            // ========================================================
-            // IMPORTANT FIX:
-            //
-            // When returning to a background tab, immediately renew
-            // its localStorage timestamp. This avoids waiting for the
-            // next throttled interval.
-            // ========================================================
             document.addEventListener(
                 'visibilitychange',
                 () => {
@@ -3431,14 +3490,11 @@
                             pairId
                         );
 
-                        // Also immediately refresh the list state
-                        // in case this tab is returning to the foreground.
                         refreshOpenTabStyles();
                     }
                 }
             );
 
-            // Also renew when the browser window regains focus.
             window.addEventListener(
                 'focus',
                 () => {
@@ -3472,7 +3528,6 @@
             }
         );
 
-        // Detail pages can also have their root replaced by React.
         let scheduled = false;
 
         const scheduleDetail =
@@ -3588,6 +3643,11 @@
             'Copy DEX addresses + labels',
             () =>
                 copyPairs('labels')
+        );
+
+        GM_registerMenuCommand(
+            'Export visible tokens to TXT',
+            () => exportPairsToTxt()
         );
 
         GM_registerMenuCommand(
