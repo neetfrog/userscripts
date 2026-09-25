@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Dex Pair Clipboard & Tool Links
 // @namespace    http://example.com/
-// @version      2.0
-// @description  Copy Solana DEX pair/token addresses, open GMGN/pump.fun/Twitter/Telegram links, hide unwanted coins, attach custom labels/notes, and export token data to a .txt file.
+// @version      2.1
+// @description  Copy Solana DEX pair/token addresses, open GMGN/pump.fun/Twitter/Telegram links, hide unwanted coins, attach custom labels/notes, and export token data (including labels) to a .txt file.
 // @match        *://dexscreener.com/*
 // @match        *://*.dexscreener.com/*
 // @match        *://gmgn.ai/*
@@ -2403,8 +2403,17 @@
                 const websiteUrl = websites || 'N/A';
                 const twitterUrl = twitter || 'N/A';
 
+                // Retrieve label info for this pair if it exists
+                const labelInfo = getLabel(pairId);
+
                 let line = `Name: ${name} (${symbol})\n`;
                 line += `Contract: ${pair.baseToken?.address || pair.pairAddress}\n`;
+                
+                // Include label in text output if present
+                if (labelInfo) {
+                    line += `Label: ${labelInfo.text}\n`;
+                }
+
                 line += `Market Cap: $${typeof mcap === 'number' ? mcap.toLocaleString() : mcap}\n`;
                 line += `6h Change: ${h6Chg}%\n`;
                 line += `24h Change: ${h24Chg}%\n`;
